@@ -2536,9 +2536,13 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options, ...) {
 
   if (is.null(dataset)) {
     dataset <- .readDataSetToEnd(columns.as.numeric = numericVars, columns.as.factor = factorVars)
-    if (options$type3){
-      dataset$operators <- rep(1, nrow(dataset))
-    }
+  }
+
+  if (ready) {
+    for (v in factorVars)
+      dataset[[v]] <- as.factor(dataset[[v]])
+    if (options$type3)
+      dataset$operators <- factor(rep(1, nrow(dataset)))
   }
 
   datasets <- list()
