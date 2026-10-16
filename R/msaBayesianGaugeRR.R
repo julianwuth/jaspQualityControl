@@ -16,1672 +16,199 @@
 #
 
 #' @export
-msaBayesianGaugeRR <- function(jaspResults, dataset, options, ...) {
-  # Compute additional options
-  options <- .msabComputeDerivedOptions(options)
-
-  # Check if ready
-  ready <- .msabIsReady(options)
-
-  # dataset in wide & long format
-  datasets <- .msabReadDataset(dataset, options, ready)
-  dataset <- datasets[["dataLong"]]
-  dataWide <- datasets[["dataWide"]]
-
-  # adjust variable names in options
-  options <- .msabAdjustVarNames(options, dataWide, ready)
-
-  # Error checks
-  .msabCheckErrors(jaspResults, options, ready, dataset, dataWide)
-
-  # note: this can be done better
-  measurements <- options[["measurements"]]
-  parts <- options[["parts"]]
-  operators <- options[["operators"]]
-  measurementsWide <- options[["measurementsWide"]]
-
-  # Results from model comparison
-  bfTest <- .runBFtest(jaspResults, dataset, measurements, parts, operators, options, ready)
-
-  # Model comparison table
-  if(options[["RRTable"]] && !options$report){
-    .createBFtable(jaspResults, dataset, options, measurements, parts, operators, ready)
-  }
-
-  # MCMC
-  .runMCMC(jaspResults, dataset, measurements, parts, operators, options, ready)
-
-  # compute percentages
-  .getStudyVariation(jaspResults, parts, operators, options, ready)
-  .getPercContrib(jaspResults, parts, operators, options, ready)
-  .getPercStudy(jaspResults, ready)
-
-  if(options$tolerance) {
-    .getPercTol(jaspResults, options, ready)
-  }
-
-  # fit distribution to samples
-  .fitDistToSamples(jaspResults, options, ready)
-
-  # insert report here
-  if(options$report) {
-    .createGaugeReport(jaspResults, dataset = dataWide, measurements = measurementsWide, parts, operators, options, ready)
-  } else {
-
-    if(options$RRTable) {
-      # Variance components table
-      .createVarCompTable(jaspResults, parts, operators, ready, options)
-
-      # % Contribution to total variation table
-      .createPercContribTable(jaspResults, options, parts, operators, ready)
-
-      # Gauge evaluation table
-      .createGaugeEval(jaspResults, parts, operators, options, ready)
-    }
-
-    # prior
-    if(options$priorPlot) {
-      .plotPrior(jaspResults, options)
-    }
-
-    # MCMC diagnostics
-    if(options$diagnosticsTable || options$diagnosticsPlots) {
-      .mcmcDiagnostics(jaspResults, parts, operators, options, ready)
-    }
-
-    # posteriors
-    if(options$posteriorPlot){
-      .fillPostSummaryTable(jaspResults, options, parts, operators, ready)
-
-      # summary table & plots
-      .createPostSummaries(jaspResults, options, parts, operators, ready)
-    }
-
-    if(options$varianceComponentsGraph) {
-      .createVarCompPlot(jaspResults, options, ready)
-    }
-
-    # contour plot
-    if(options$contourPlot) {
-      .createContourPlot(jaspResults, parts, operators, measurements, dataset, options, ready)
-    }
-
-    # range chart
-    if(options$rChart) {
-      .createRChart(jaspResults, dataset = dataWide, measurements = measurementsWide, operators, parts, options, ready)
-    }
-
-    # average chart
-    if(options$xBarChart) {
-      .createXbarChart(jaspResults, dataset = dataWide, measurements = measurementsWide, operators, parts, options, ready)
-    }
-
-    # scatter plot
-    if(options$scatterPlot){
-      .createScatterPlotOperators(jaspResults, dataset = dataWide, measurements = measurementsWide, operators, parts, options, ready)
-    }
-
-    # measurement by part plot
-    if(options$partMeasurementPlot) {
-      .createMeasureByPartPlot(jaspResults, dataset = dataWide, measurements = measurementsWide, operators, parts, options, ready)
-    }
-
-    if(options$operatorMeasurementPlot) {
-      .createMeasureByOperatorPlot(jaspResults, dataset = dataWide, measurements = measurementsWide, operators, parts, options, ready, Type3 = options$type3)
-    }
-
-    if(options$partByOperatorMeasurementPlot) {
-      .createPartByOperatorInterPlot(jaspResults, dataset = dataWide, measurements = measurementsWide, operators, parts, options, ready, Type3 = options$type3)
-    }
-
-    if(options$trafficLightChart) {
-      .createTrafficLightPlot(jaspResults, options, ready)
-    }
-  }
-}
-
-
-#### Tables
-.createBFtable <- function(jaspResults, dataset, options, measurements, parts, operators, ready) {
-  if(!is.null(jaspResults[["BFtable"]])) {
-    return()
-  }
-
-  BFtable <- createJaspTable(title = gettext("Model Comparison"))
-  BFtable$position <- 1
-  BFtable$dependOn(.bfTableDependencies())
-
-  jaspResults[["BFtable"]] <- BFtable
-
-  BFtable$addColumnInfo(name = "modelName",      title = gettext("Models"),          type = "string")
-  BFtable$addColumnInfo(name = "comparisonBF",   title = gettext("BF<sub>10</sub>"), type = "number")
-  BFtable$addColumnInfo(name = "error",          title = gettextf("error %%"),         type = "number")
-
-  # check for errors & set data
-  if(ready) {
-    if(isTryError(jaspResults[["modelComparison"]][["object"]])) {
-      errorMsg <- jaspResults[["modelComparison"]][["object"]]
-
-      if(options$estimationType == "automatic") {
-        errorMsg <- gettextf("Model comparison Bayes factors could not be computed: %s<br>Select manual estimation to try running the rest of the analysis.",
-                             .rmNewLine(errorMsg))
-        .quitAnalysis(errorMsg)
-      }
-      errorMsg <- gettextf("Model comparison Bayes factors could not be computed: %s",
-                           .rmNewLine(errorMsg))
-      BFtable$setError(errorMsg)
-
-    } else {
-      BFtable$setData(jaspResults[["modelComparison"]][["object"]])
-      BFtable$addFootnote(gettext("BF<sub>10</sub> compares the full model to the indicated model in each row."))
-    }
-  }
-
-  return()
-}
-
-.createVarCompTable <- function(jaspResults, parts, operators, ready, options) {
-  if(!is.null(jaspResults[["varCompTable"]])) {
-    return()
-  }
-
-  varCompTable <- createJaspTable(title = gettext("Variance Components"))
-  varCompTable$position <- 2
-  varCompTable$dependOn(.varCompTableDependencies())
-
-  jaspResults[["varCompTable"]] <- varCompTable
-
-  varCompTable$addColumnInfo(name = "sourceName",   title = gettext("Source"),                type = "string")
-  varCompTable$addColumnInfo(name = "postMeans",    title = gettext("Mean"),                  type = "number")
-  varCompTable$addColumnInfo(name = "postSds",      title = gettext("Std. Deviation"),        type = "number")
-  varCompTable$addColumnInfo(name = "postCrIlower", title = gettext("Lower"),                 type = "number", overtitle = gettextf("95%% Credible Interval"))
-  varCompTable$addColumnInfo(name = "postCrIupper", title = gettext("Upper"),                 type = "number", overtitle = gettextf("95%% Credible Interval"))
-
-  # set data
-  if(ready) {
-    fillDat <- .getVarianceComponents(jaspResults, parts, operators, options)
-
-    if(.hasExtremeValues(fillDat)$large) {
-      varCompTable$addFootnote(gettext("Estimates are very large potentially making results unreliable. Consider transfroming the data."),
-                               symbol = gettext("<b>Warning:</b>"))
-    }
-
-    if(.hasExtremeValues(fillDat)$small) {
-      varCompTable$addFootnote(gettext("Estimates are very small potentially making results unreliable. Consider transfroming the data."),
-                               symbol = gettext("<b>Warning:</b>"))
-    }
-
-    varCompTable$setData(fillDat)
-    varCompTable$addFootnote(gettext("Credible intervals are estimated based on the MCMC samples."))
-
-    if(!options$type3 && .evalInter(jaspResults, parts, operators, options)) {
-      varCompTable$addFootnote(gettext("The components are based on the model only including the main effects."))
-    } else {
-      varCompTable$addFootnote(gettext("The components are based on the full model."))
-    }
-
-  } else {
-    return()
-  }
-
-  return()
-}
-
-.createPercContribTable <- function(jaspResults, options, parts, operators, ready) {
-  if(!is.null(jaspResults[["contribTable"]])) {
-    return()
-  }
-  contribTable <- createJaspTable(title = gettextf("%% Contribution to Total Variation"))
-  contribTable$position <- 3
-  contribTable$dependOn(.varCompTableDependencies())
-  jaspResults[["contribTable"]] <- contribTable
-
-  contribTable$addColumnInfo(name = "sourceName", title = gettext("Source"),  type = "string")
-  contribTable$addColumnInfo(name = "means",      title = gettext("Mean"),    type = "number")
-  overTitle <- gettextf("95%% Credible Interval")
-  contribTable$addColumnInfo(name = "lower",      title = gettext("Lower"),   type = "number", overtitle = overTitle)
-  contribTable$addColumnInfo(name = "upper",      title = gettext("Upper"),   type = "number", overtitle = overTitle)
-
-  if(ready) {
-    contribTable$setData(.percentSampleSummaries(jaspResults[["percContribSamples"]][["object"]], options))
-    contribTable$addFootnote(gettext("Credible intervals are estimated based on the MCMC samples."))
-  } else {
-    return()
-  }
-  return()
-}
-
-.createPostSummaries <- function(jaspResults, options, parts, operators, ready){
-  if(!is.null(jaspResults[["posteriorSummaries"]])){
-    return()
-  }
-
-  posteriorSummaries <- createJaspContainer(title = gettext("Posterior Distributions"))
-  posteriorSummaries$position <- 8
-  posteriorSummaries$dependOn(c(.varCompTableDependencies(),
-                                .postPlotDependencies()))
-  jaspResults[["posteriorSummaries"]] <- posteriorSummaries
-
-  if(isTryError(jaspResults[["distFit"]][["object"]])) {
-    errorMsg <- gettextf("The %s distribution could not be fit to the samples.
-                         Try selecting another distribution.", .getDistNames(options$distType))
-    tempPlot <- createJaspPlot()
-    tempPlot$setError(errorMsg)
-    posteriorSummaries[["errorPlot"]] <- tempPlot
-    return()
-  }
-
-  if(!ready) {
-    # create empty plot for posterior distributions
-    posteriorSummaries[["plot"]] <- createJaspPlot(width = 600, height = 320)
-  }
-
-  # table
-  postSummary <- createJaspTable(title = gettext("Posterior Summary"))
-  postSummary$position <- 1
-  postSummary$dependOn(c(.varCompTableDependencies(),
-                         .postPlotDependencies()))
-
-  posteriorSummaries[["postSummary"]] <- postSummary
-
-  # title for point estimate
-  pointEst <- switch (options$posteriorPointEstimateType,
-                      "mean" = gettext("Mean"),
-                      "mode" = gettext("Mode"),
-                      "median" = gettext("Median")
-  )
-
-  # overtitle for CrI
-  if(options$posteriorCiType == "central" || options$posteriorCiType == "HPD") {
-    mass <- round(options$posteriorCiMass * 100)
-  }
-
-  if(options$posteriorCiType == "custom") {
-    mass <- round((options$posteriorCiUpper - options$posteriorCiLower) * 100)
-  }
-
-  overtitle <- gettextf("%s%% Credible Interval", mass)
-
-  postSummary$addColumnInfo(name = "parameter",     title = gettext("Source"), type = "string")
-
-  if(options$posteriorPointEstimate) {
-    postSummary$addColumnInfo(name = "pointEstimate", title = pointEst,    type = "number")
-  }
-
-  if(options$posteriorCi) {
-    if(options$posteriorCiType != "custom" || (options$posteriorCiType == "custom" && options$customCiType != "customCiCutOff")) {
-      postSummary$addColumnInfo(name = "ciLower",       title = gettext("Lower"),     type = "number", overtitle = gettext(overtitle))
-      postSummary$addColumnInfo(name = "ciUpper",       title = gettext("Upper"),     type = "number", overtitle = gettext(overtitle))
-      postSummary$addFootnote(gettext("Credible intervals are estimated based on the distribution fit to the MCMC samples."))
-    } else {
-      cutOff <- options$posteriorCiCutOff
-      if(cutOff == as.integer(cutOff)) {
-        postSummary$addColumnInfo(name = "belowCutOff", title = gettextf("p(x < %d | data)", cutOff), type = "number")
-      } else {
-        postSummary$addColumnInfo(name = "belowCutOff", title = gettextf("p(x < %.2f | data)", cutOff), type = "number")
-      }
-    }
-  }
-
-  if(!ready) {
-    return()
-  }
-
-  dat <- jaspResults[["postSummaryStats"]][["object"]]
-  errors <- .checkProbabilityEstimates(dat$belowCutOff)
-  dat$belowCutOff <- errors[["estimates"]] # cleaned estimates
-
-  if(options$customCiType == "customCiCutOff") {
-    # check for too large cut-off
-    if(errors[["large"]]) {
-      if(cutOff == as.integer(cutOff)) {
-        postSummary$addFootnote(gettextf("p(x < %d | data) could not be calculated for some sources. The cut-off is probably too large or too small.",
-                                         cutOff), symbol = gettext("<b>Warning:</b>"))
-      } else {
-        postSummary$addFootnote(gettextf("p(x < %.2f | data) could not be calculated for some sources. The cut-off is probably too large or too small.",
-                                         cutOff), symbol = gettext("<b>Warning:</b>"))
-      }
-    }
-
-    # check for negative estimates
-    if(errors[["negative"]]) {
-      if(cutOff == as.integer(cutOff)) {
-        postSummary$addFootnote(gettextf("Some estimates of p(x < %d | data) were negative and, therefore, removed. Try a different cut-off or distribution.",
-                                         cutOff), symbol = gettext("<b>Warning:</b>"))
-      } else {
-        postSummary$addFootnote(gettextf("Some estimates of p(x < %.2f | data) were negative and, therefore, removed. Try a different cut-off or distribution.",
-                                         cutOff), symbol = gettext("<b>Warning:</b>"))
-      }
-    }
-  }
-
-  postSummary$setData(dat)
-
-  # plots
-  .plotVariancePosteriors(jaspResults, options, parts, operators)
-
-  return()
-}
-
-.createGaugeEval <- function(jaspResults, parts, operators, options, ready) {
-  if(!is.null(jaspResults[["gaugeEvaluation"]])) {
-    return()
-  }
-
-  gaugeEvaluation <- createJaspContainer(title = gettext("Gauge Evaluation"))
-  gaugeEvaluation$position <- 4
-  gaugeEvaluation$dependOn(c(.varCompTableDependencies(),
-                             "studyVarianceMultiplierType", "studyVarianceMultiplierValue",
-                             "tolerance", "toleranceValue"))
-  jaspResults[["gaugeEvaluation"]] <- gaugeEvaluation
-
-  ### Standard deviation & study variation table
-  stdTable <- createJaspTable(title = gettext("Standard Deviation & Study Variation"))
-  stdTable$position <- 1
-  gaugeEvaluation[["stdTable"]] <- stdTable
-
-  stdTable$addColumnInfo(name = "sourceName",    title = gettext("Source"),                  type = "string")
-  stdTable$addColumnInfo(name = "meansStd",      title = gettext("Mean<br>Std"),             type = "number")
-  stdTable$addColumnInfo(name = "lowerStd",      title = gettext("Lower"),                   type = "number", overtitle = gettextf("95%% Credible Interval<br>Std"))
-  stdTable$addColumnInfo(name = "upperStd",      title = gettext("Upper"),                   type = "number", overtitle = gettextf("95%% Credible Interval<br>Std"))
-  stdTable$addColumnInfo(name = "meansStudyVar", title = gettext("Mean<br>Study Variation"), type = "number")
-  stdTable$addColumnInfo(name = "lowerStudyVar", title = gettext("Lower"),                   type = "number", overtitle = gettextf("95%% Credible Interval<br>Study Variation"))
-  stdTable$addColumnInfo(name = "upperStudyVar", title = gettext("Upper"),                   type = "number", overtitle = gettextf("95%% Credible Interval<br>Study Variation"))
-
-  if(ready) {
-    stdData <- .fillTablesGaugeEval(jaspResults, parts, operators, options, whichTable = "sd")
-
-    studyVarData <- .fillTablesGaugeEval(jaspResults, parts, operators, options, whichTable = "studyVar")[, -1] # remove source name
-    stdTable$setData(cbind(stdData, studyVarData))
-
-    stdTable$addFootnote(gettext("Credible intervals are estimated based on the MCMC samples."))
-
-    # number of distinct categories
-    nDistinct <- .getDistinctCategories(jaspResults, parts, operators, options)
-    stdTable$addFootnote(gettextf("Number of distinct categories: %s", nDistinct))
-  }
-
-  ### Percent study variation & percent tolerance table
-  if(options$tolerance) {
-    title <- gettextf("%% Study Variation & %% Tolerance")
-  } else {
-    title <- gettextf("%% Study Variation")
-  }
-  percStudyVarTable <- createJaspTable(title = title)
-  percStudyVarTable$position <- 2
-  gaugeEvaluation[["percStudyVarTable"]] <- percStudyVarTable
-
-  percStudyVarTable$addColumnInfo(name = "sourceName",          title = gettext("Source"),                      type = "string")
-  percStudyVarTable$addColumnInfo(name = "meansPercStudy",      title = gettextf("Mean<br>%% Study Variation"), type = "number")
-  percStudyVarTable$addColumnInfo(name = "lowerPercStudy",      title = gettext("Lower"),                       type = "number", overtitle = gettextf("95%% Credible Interval<br>%% Study Variation"))
-  percStudyVarTable$addColumnInfo(name = "upperPercStudy",      title = gettext("Upper"),                       type = "number", overtitle = gettextf("95%% Credible Interval<br>%% Study Variation"))
-
-  if(options$tolerance) {
-    percStudyVarTable$addColumnInfo(name = "meansPercTol",      title = gettextf("Mean<br>%% Tolerance"), type = "number")
-    percStudyVarTable$addColumnInfo(name = "lowerPercTol",      title = gettext("Lower"),                 type = "number", overtitle = gettextf("95%% Credible Interval<br>%% Tolerance"))
-    percStudyVarTable$addColumnInfo(name = "upperPercTol",      title = gettext("Upper"),                 type = "number", overtitle = gettextf("95%% Credible Interval<br>%% Tolerance"))
-  }
-
-  if(ready) {
-    percStudyData <- .fillTablesGaugeEval(jaspResults, parts, operators, options, whichTable = "percStudyVar")
-
-    if(!options$tolerance) {
-      percStudyVarTable$setData(percStudyData)
-    } else {
-      percTolData <- .fillTablesGaugeEval(jaspResults, parts, operators, options, whichTable = "percTol")[, -1]
-      percStudyVarTable$setData(cbind(percStudyData, percTolData))
-    }
-    percStudyVarTable$addFootnote(gettext("Credible intervals are estimated based on the MCMC samples."))
-  }
-
-  return()
-}
-
-.runBFtest <- function(jaspResults, dataset, measurements, parts, operators, options, ready) {
-  if(is.null(jaspResults[["modelComparison"]]) && ready) {
-    modelComparison <- createJaspState()
-    modelComparison$dependOn(c("operatorWideFormat", "operatorLongFormat", "partWideFormat", "partLongFormat", "measurementsWideFormat",
-                               "measurementLongFormat", "seed", "setSeed", "rscalePrior", "type3"))
-    jaspResults[["modelComparison"]] <- modelComparison
-  } else {
-    return()
-  }
-
-  if(options$setSeed) {
-    set.seed(options$seed)
-  }
-
-  if(options$type3){
-    formula <- as.formula(paste(measurements, "~", parts))
-    bfFit <- try(BayesFactor::generalTestBF(formula, data = dataset,
-                                            whichRandom = parts,
-                                            rscaleRandom = options$rscalePrior,
-                                            progress = FALSE))
-
-    if(isTryError(bfFit)) {
-      jaspResults[["modelComparison"]][["object"]] <- bfFit
-      return()
-    }
-
-    bfDf <- as.data.frame(bfFit)
-    full <- parts
-    bfFullNull <- bfDf$bf
-
-  } else {
-    formula <- as.formula(paste(measurements, "~", parts, "*", operators))
-
-    # run general comparison for all potential models
-    bfFit <- try(BayesFactor::generalTestBF(formula, data = dataset,
-                                            whichRandom = c(operators, parts),
-                                            rscaleRandom = options$rscalePrior,
-                                            progress = FALSE))
-    if(isTryError(bfFit)) {
-      jaspResults[["modelComparison"]][["object"]] <- bfFit
-      return()
-    }
-    bfDf <- as.data.frame(bfFit)
-
-    # extract full model and model with only main effects
-    main <- paste(parts, "+", operators)
-    full <- paste0(parts, " + ", operators, " + ", parts, ":", operators)
-    bfDf <- bfDf[c(main, full), ]
-
-    bfFullNull <- bfDf[full, ]$bf
-  }
-
-  # dropping unnecessary columns
-  bfDf <- bfDf[, !colnames(bfDf) %in% c("time", "code")]
-
-  # obtain BF comparing full model to other models
-  bfDf$bf <- bfFullNull / bfDf$bf
-
-  # add null model
-  bfDf["Null model", ] <- c(bfFullNull,
-                            bfDf[full, ]$error)
-
-  bfDf[full, ]$error <- ""
-
-  # add model names & change colnames
-  colnames(bfDf) <- c("comparisonBF", "error")
-  bfDf$modelName <- rownames(bfDf)
-  if(!options$type3) {
-    bfDf$modelName <- jaspBase::gsubInteractionSymbol(bfDf$modelName)
-  }
-
-  bfDf <- bfDf[order(-bfDf$comparisonBF), ]
-
-  jaspResults[["modelComparison"]][["object"]] <- bfDf
-
-  return()
-}
-
-#### Plots
-.createContourPlot <- function(jaspResults, parts, operators, measurements, dataset, options, ready) {
-  if(!is.null(jaspResults[["contourPlot"]])) {
-    return()
-  }
-
-  contourPlot <- createJaspContainer(title = gettext("Contour Plot"))
-  contourPlot$position <- 6
-  contourPlot$dependOn(c(.varCompTableDependencies(),
-                         "studyVarianceMultiplierType", "studyVarianceMultiplierValue",
-                         "contourPlot", "contourUSL", "contourLSL"))
-
-  jaspResults[["contourPlot"]] <- contourPlot
-
-  tempPlot <- createJaspPlot(width = 600, height = 600)
-  tempPlot$position <- 2
-
-  # table with the posterior means and CrIs for the risks
-  risksTable <- createJaspTable(title = gettext("Producer's (\u03b4) and Consumer's (\u03b2) Risk"))
-  risksTable$position <- 1
-
-  risksTable$addColumnInfo(name = "risks", title = gettext("Risk"),  type = "string")
-  risksTable$addColumnInfo(name = "means", title = gettext("Mean"),  type = "number")
-  risksTable$addColumnInfo(name = "lower", title = gettext("Lower"), type = "number", overtitle = gettextf("95%% Credible Interval"))
-  risksTable$addColumnInfo(name = "upper", title = gettext("Upper"), type = "number", overtitle = gettextf("95%% Credible Interval"))
-
-  if(!ready) {
-    contourPlot[["plot"]] <- tempPlot
-    contourPlot[["table"]] <- risksTable
-    return()
-  }
-
-  samplesMat <- .arrayToMat(jaspResults[["MCMCsamples"]][["object"]])
-  excludeInter <- .evalInter(jaspResults, parts, operators, options)
-  compDf <-.getComponentsFromSamples(jaspResults, parts, operators, options, excludeInter)
-
-  # obtain necessary data
-  contourDf <- compDf[, c("total", "part")]
-  mu <- mean(dataset[[measurements]])
-
-  # data frame for plotting
-  meanEllipse <- TRUE
-  plotDf <- .getEllipses(contourDf, mu, meanEllipse = meanEllipse, options = options)
-
-  if(isTryError(plotDf)) {
-    errorMsg <- gettextf("Failed to calculate contour: %s", .rmNewLine(plotDf))
-    tempPlot$setError(errorMsg)
-    contourPlot[["plot"]] <- tempPlot
-    return()
-  }
-
-  if(meanEllipse) {
-    p <- ggplot2::ggplot(plotDf, ggplot2::aes(x = x, y = y))
-  } else {
-    p <- ggplot2::ggplot(plotDf, ggplot2::aes(x = x, y = y, group = iter))
-  }
-
-  p <- p +
-    ggplot2::geom_vline(xintercept = c(options$contourLSL, options$contourUSL), linetype = "dashed", color = "black", linewidth = 1) +
-    ggplot2::geom_hline(yintercept = c(options$contourLSL, options$contourUSL), linetype = "dashed", color = "black", linewidth = 1) +
-    ggplot2::geom_path(alpha = 0.5, colour = "steelblue", linewidth = 1)
-
-  # axes
-  xLower <- min(options$contourLSL, plotDf$x)
-  xUpper <- max(options$contourUSL, plotDf$x)
-  xLims <- c(xLower, xUpper)
-  xBreaks <- jaspGraphs::getPrettyAxisBreaks(xLims)
-  xLims <- c(xBreaks[1], xBreaks[length(xBreaks)])
-
-  yLower <- min(options$contourLSL, plotDf$y)
-  yUpper <- max(options$contourUSL, plotDf$y)
-  yLims <- c(yLower, yUpper)
-  yBreaks <- jaspGraphs::getPrettyAxisBreaks(yLims)
-  yLims <- c(yBreaks[1], yBreaks[length(yBreaks)])
-
-  p <- p +
-    ggplot2::scale_x_continuous(name = gettext("True Value"), breaks = xBreaks,
-                                limits = xLims, labels = xBreaks) +
-    ggplot2::scale_y_continuous(name = gettext("Measurement"), breaks = yBreaks,
-                                limits = yLims, labels = yBreaks) +
-    ggplot2::coord_equal()
-
-  # theme
-  p <- p +
-    jaspGraphs::themeJaspRaw() +
-    jaspGraphs::geom_rangeframe(sides = "bl")
-
-  tempPlot$plotObject <- p
-
-  contourPlot[["plot"]] <- tempPlot
-
-  # fill risk table
-  fillDat <- .getRisks(contourDf, mu, options)
-
-  if(isTryError(fillDat)) {
-    errorMsg <- gettextf("Risks could not be computed: %s<br>Try adjusting the specification limits.", fillDat)
-    risksTable$setError(errorMsg)
-  } else {
-    risksTable$setData(fillDat)
-  }
-  contourPlot[["table"]] <- risksTable
-
-  return()
-}
-
-.plotPrior <- function(jaspResults, options) {
-  if(!is.null(jaspResults[["priorPlot"]])) {
-    return()
-  }
-  priorPlot <- createJaspContainer(title = gettext("Prior Distribution"))
-  priorPlot$position <- 5
-  priorPlot$dependOn(c("rscalePrior", "report", "priorPlot"))
-  jaspResults[["priorPlot"]] <- priorPlot
-
-  gPrior <- createJaspPlot(title = gettext("g-prior"), width = 600, height = 320)
-
-  # axis limit
-  xUpper <- extraDistr::qinvchisq(0.75, nu = 1, tau = options$rscalePrior^2)
-  xBreaks <- jaspGraphs::getPrettyAxisBreaks(c(0, xUpper))
-
-  p <- ggplot2::ggplot() +
-    ggplot2::stat_function(fun = extraDistr::dinvchisq,
-                           args = list(nu = 1, tau = options$rscalePrior^2),
-                           linewidth = 1)
-
-  # axes
-  p <- p + ggplot2::scale_y_continuous("Density") +
-    ggplot2::scale_x_continuous("g", breaks = xBreaks, limits = c(0, xUpper))
-
-  # JASP theme
-  p <- p + jaspGraphs::themeJaspRaw() + jaspGraphs::geom_rangeframe()
-  gPrior$plotObject <- p
-
-  priorPlot[["plot"]] <- gPrior
-
-  return()
-}
-
-### posterior plots
-.plotVariancePosteriors <- function(jaspResults, options, parts, operators){
-  dat <- jaspResults[["posteriorSummaries"]][["postSummary"]]
-  fits <- jaspResults[["distFit"]][["object"]]
-
-  samplesMat <- switch(options$posteriorPlotType,
-                       "var" = .arrayToMat(jaspResults[["MCMCsamples"]][["object"]]),
-                       "percContrib" = jaspResults[["percContribSamples"]][["object"]],
-                       "percStudyVar" = jaspResults[["percStudySamples"]][["object"]],
-                       "percTol" = jaspResults[["percTolSamples"]][["object"]])
-
-  if(options$posteriorPlotType == "var") {
-    titles <- .convertOutputNames(names(fits), parts, operators, includeSigma = FALSE)
-  } else {
-    titles <- names(fits)
-  }
-  postSummary <- jaspResults[["postSummaryStats"]][["object"]]
-
-  for(i in seq_along(titles)) {
-    tempPlot <- createJaspPlot(title = gettext(titles[i]), width = 600, height = 320)
-
-    p <- ggplot2::ggplot()
-
-    # add histogram outlines
-    if(options$posteriorHistogram) {
-      p <- p + ggplot2::geom_step(data = data.frame(x = samplesMat[, i]),
-                                  ggplot2::aes(x = x, y = ggplot2::after_stat(density)),
-                                  stat = "bin", direction = "mid", linewidth = 1)
-      pBuild <- ggplot2::ggplot_build(p)
-      maxHistDens <- max(pBuild$data[[1]][, "density"])
-    }
-
-    # credible interval
-    if(options$posteriorCi) {
-      if(options$posteriorCiType != "custom" || (options$posteriorCiType == "custom" && options$customCiType != "customCiCutOff")) {
-        ciUpper <- postSummary[i, "ciUpper"]
-        ciLower <- postSummary[i, "ciLower"]
-
-        p <- p +
-          if(options$distType == "metalog") {
-            ggplot2::stat_function(fun = rmetalog::dmetalog, args = list(m = fits[[i]], term = fits[[i]]$params$term_limit),
-                                   geom = "area", xlim = c(ciLower, ciUpper), fill = "grey")
-            # note: it might make sense to just pass some approximation of the density to the plotting function in case of the metalog
-            # so it only has to evaluate the density function once
-          } else { # note: this would be nicer with a list of functions again, but the functions take different arguments
-            ggplot2::stat_function(fun = GeneralizedHyperbolic::dgig, args = list(param = fits[[i]]$param),
-                                   geom = "area", xlim = c(ciLower, ciUpper), fill = "grey")
-          }
-      } else {
-
-        # do not plot if p(x < cut-off | data) was not computed correctly
-        est <- .checkProbabilityEstimates(jaspResults[["postSummaryStats"]][["object"]]$belowCutOff)[["estimates"]]
-
-        if(!i %in% which(is.na(est))) {
-          p <- p +
-            if(options$distType == "metalog") {
-              ggplot2::stat_function(fun = rmetalog::dmetalog, args = list(m = fits[[i]], term = fits[[i]]$params$term_limit),
-                                     geom = "area", xlim = c(0, options$posteriorCiCutOff), fill = "grey")
-              # note: it might make sense to just pass some approximation of the density to the plotting function in case of the metalog
-              # so it only has to evaluate the density function once
-            } else { # note: this would be nicer with a list of functions again, but the functions take different arguments
-              ggplot2::stat_function(fun = GeneralizedHyperbolic::dgig, args = list(param = fits[[i]]$param),
-                                     geom = "area", xlim = c(0, options$posteriorCiCutOff), fill = "grey")
-            }
-        }
-      }
-    }
-
-    p <- p +
-      if(options$distType == "metalog") {
-        ggplot2::stat_function(fun = rmetalog::dmetalog, args = list(m = fits[[i]], term = fits[[i]]$params$term_limit),
-                               linewidth = 1)
-      } else { # note: see above
-        ggplot2::stat_function(fun = GeneralizedHyperbolic::dgig, args = list(param = fits[[i]]$param),
-                               linewidth = 1)
-      }
-
-    # point estimate
-    if(options$posteriorPointEstimate) {
-      xPoint <- postSummary[i, "pointEstimate"]
-      yPoint <- ifelse(options$distType == "metalog",
-                       rmetalog::dmetalog(m = fits[[i]], q = xPoint, term = fits[[i]]$params$term_limit),
-                       GeneralizedHyperbolic::dgig(x = xPoint, param = fits[[i]]$param))
-      pointDf <- data.frame(xPoint, yPoint)
-
-      p <- p + ggplot2::geom_point(data = pointDf, mapping = ggplot2::aes(x = xPoint, y = yPoint),
-                                   shape = 21, size = 4, fill = "grey", stroke = 1)
-    }
-
-    # axes
-    # select function for axis limits based on distribution
-    axisFun <- .axisLimFuns()[[options$distType]]
-
-    lims <- axisFun(fits[[i]], postSummary, options, iter = i,
-                    histDens = ifelse(options$posteriorHistogram, maxHistDens, 0))
-
-    xLab <- switch(options$posteriorPlotType,
-                   "var" = titles[i],
-                   "percContrib" = "% Contribution",
-                   "percStudyVar" = "% Study Variation",
-                   "percTol" = "% Tolerance")
-    if(options$posteriorPlotType == "var"){
-      xLab <- bquote(sigma[.(xLab)]^2)
-    }
-
-    p <- p +
-      ggplot2::scale_x_continuous(name = xLab,
-                                  breaks = lims$x$breaks,
-                                  limits = lims$x$limits, labels = lims$x$breaks) +
-      ggplot2::scale_y_continuous(name = "Density", breaks = lims$y$breaks,
-                                  limits = lims$y$limits, labels = lims$y$breaks)
-
-    # theme
-    p <- p + jaspGraphs::themeJaspRaw() + jaspGraphs::geom_rangeframe(sides = "bl")
-
-    tempPlot$plotObject <- p
-    jaspResults[["posteriorSummaries"]][[titles[i]]] <- tempPlot
-  }
-  return()
-}
-
-.createRChart <- function(jaspResults, dataset, measurements, operators, parts, options, ready) {
-  if(!is.null(jaspResults[["rChart"]])) {
-    return()
-  }
-
-  jaspResults[["rChart"]] <- createJaspContainer(gettext("Range chart by operator"))
-  jaspResults[["rChart"]]$position <- 9
-  jaspResults[["rChart"]]$dependOn(c("rChart", "measurementLongFormat",
-                                     "measurementsWideFormat", "report",
-                                     "operatorWideFormat", "operatorLongFormat",
-                                     "partWideFormat", "partLongFormat"))
-  jaspResults[["rChart"]][["plot"]] <- createJaspPlot(width = 1200, height = 500)
+msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
+  vars  <- .msabVariables(options)
+  ready <- .msabIsReady(vars)
+
+  data    <- NULL
+  fits    <- NULL
+  model   <- NULL
+  samples <- NULL
+  draws   <- NULL
 
   if (ready) {
-    ruleList <- .getRuleListSubgroupCharts(options, type = "R")
-    rChart <- .controlChart(dataset = dataset[c(measurements, operators)], plotType = "R", ruleList = ruleList,
-                            stages = operators, xAxisLabels = dataset[[parts]][order(dataset[[operators]])],
-                            stagesSeparateCalculation = FALSE)
-
-    jaspResults[["rChart"]][["plot"]]$plotObject <- rChart$plotObject
-    jaspResults[["rChart"]][["table"]] <- rChart$table
+    data    <- .msabReadDataset(dataset, options, vars)
+    vars    <- data[["vars"]]
+    fits    <- .msabFitModels(jaspResults, data[["long"]], options, vars)
+    model   <- .msabSelectModel(fits, options)
+    samples <- .msabRunMCMC(jaspResults, fits[[model]], options, vars)
+    draws   <- .msabComponentDraws(samples, options)
   }
 
-  return()
-}
-
-.createXbarChart <- function(jaspResults, dataset, measurements, operators, parts, options, ready) {
-  if(!is.null(jaspResults[["xBarChart"]])) {
+  if (options[["report"]]) {
+    .msabReport(jaspResults, data, draws, options, vars, ready)
     return()
   }
 
-  jaspResults[["xBarChart"]] <- createJaspContainer(gettext("Average chart by operator"))
-  jaspResults[["xBarChart"]]$position <- 10
-  jaspResults[["xBarChart"]]$dependOn(c("xBarChart", "measurementLongFormat",
-                                        "measurementsWideFormat", "report",
-                                        "operatorWideFormat", "operatorLongFormat",
-                                        "partWideFormat", "partLongFormat"))
-  jaspResults[["xBarChart"]][["plot"]] <- createJaspPlot(width = 1200, height = 500)
-
-  if (ready) {
-    ruleList <- .getRuleListSubgroupCharts(options, type = "xBar")
-    xBarChart <- .controlChart(dataset = dataset[c(measurements, operators)],
-                               plotType = "xBar", ruleList = ruleList, xBarSdType = "r", stages = operators,
-                               xAxisLabels = dataset[[parts]][order(dataset[[operators]])],
-                               stagesSeparateCalculation = FALSE)
-
-    jaspResults[["xBarChart"]][["plot"]]$plotObject <- xBarChart$plotObject
-    jaspResults[["xBarChart"]][["table"]] <- xBarChart$table
+  if (options[["RRTable"]]) {
+    .msabBfTable(jaspResults, fits, options, vars, ready)
+    .msabVarCompTable(jaspResults, draws, model, options, ready)
+    .msabContribTable(jaspResults, draws, options, ready)
+    .msabGaugeEvalTables(jaspResults, draws, options, ready)
   }
 
-  return()
+  if (options[["priorPlot"]])
+    .msabPriorPlot(jaspResults, options)
+
+  if (options[["diagnosticsTable"]] || options[["diagnosticsPlots"]])
+    .msabDiagnostics(jaspResults, samples, options, ready)
+
+  if (options[["varianceComponentsGraph"]])
+    .msabVarCompPlot(jaspResults, draws, options, ready)
+
+  if (options[["posteriorPlot"]])
+    .msabPosteriors(jaspResults, samples, draws, options, ready)
+
+  if (options[["rChart"]] && !options[["type3"]])
+    .msabRChart(jaspResults, data, vars, ready)
+
+  if (options[["xBarChart"]] && !options[["type3"]])
+    .msabXbarChart(jaspResults, data, vars, ready)
+
+  if (options[["scatterPlot"]] && !options[["type3"]])
+    .msabScatterPlot(jaspResults, data, options, vars, ready)
+
+  if (options[["partMeasurementPlot"]])
+    .msabMeasureByPartPlot(jaspResults, data, options, vars, ready)
+
+  if (options[["operatorMeasurementPlot"]] && !options[["type3"]])
+    .msabMeasureByOperatorPlot(jaspResults, data, options, vars, ready)
+
+  if (options[["partByOperatorMeasurementPlot"]] && !options[["type3"]])
+    .msabPartByOperatorPlot(jaspResults, data, options, vars, ready)
+
+  if (options[["trafficLightChart"]])
+    .msabTrafficLightPlot(jaspResults, draws, options, ready)
+
+  if (options[["contourPlot"]])
+    .msabContourPlot(jaspResults, data, draws, options, vars, ready)
 }
 
+#### Dependencies ----
+.msabDataDeps <- c("dataFormat", "type3",
+                   "measurementLongFormat", "operatorLongFormat", "partLongFormat",
+                   "measurementsWideFormat", "operatorWideFormat", "partWideFormat")
 
-.createScatterPlotOperators <- function(jaspResults, dataset, measurements, operators, parts, options, ready) {
-  if(!is.null(jaspResults[["gaugeScatterOperators"]])) {
-    return()
-  }
+# Bayes factor model fits
+.msabBfDeps <- c(.msabDataDeps, "rscalePrior", "setSeed", "seed")
 
-  jaspResults[["gaugeScatterOperators"]] <- createJaspPlot(title = gettext("Matrix plot for operators"),
-                                                           width = 700, height = 700)
-  jaspResults[["gaugeScatterOperators"]]$position <- 11
-  jaspResults[["gaugeScatterOperators"]]$dependOn(c("scatterPlot", "scatterPlotFitLine", "scatterPlotOriginLine",
-                                                    "operatorWideFormat", "operatorLongFormat",
-                                                    "partWideFormat", "partLongFormat",
-                                                    "measurementsWideFormat", "measurementLongFormat", "report"))
+# MCMC samples
+.msabModelDeps <- c(.msabBfDeps, "estimationType", "modelType", "bfFavorFull",
+                    "mcmcChains", "mcmcIterations", "mcmcBurnin")
 
-  if(!ready) {
-    return()
-  }
+# variance components derived from the MCMC samples
+.msabComponentDeps <- c(.msabModelDeps, "processVariationReference", "historicalSdValue")
 
-  jaspResults[["gaugeScatterOperators"]]$plotObject <- .gaugeScatterPlotOperators(jaspResults, dataset, measurements,
-                                                                                  parts, operators, options, ready)$plotObject
+.msabStudyVarDeps  <- c("studyVarianceMultiplierType", "studyVarianceMultiplierValue")
+.msabToleranceDeps <- c("tolerance", "toleranceValue")
 
-  return()
-}
+.msabPosteriorDeps <- c("posteriorPlotType", "distType", "posteriorHistogram",
+                        "posteriorPointEstimate", "posteriorPointEstimateType",
+                        "posteriorCi", "posteriorCiType", "posteriorCiMass", "customCiType",
+                        "posteriorCiLower", "posteriorCiUpper", "posteriorCiCutOff")
 
-.createMeasureByPartPlot <- function(jaspResults, dataset, measurements, operators, parts, options, ready) {
-  if (!is.null(jaspResults[["gaugeByPart"]])) {
-    return()
-  }
+.msabReportDeps <- c("report", "reportMetaData", "reportTitle", "reportTitleText",
+                     "reportPartName", "reportPartNameText", "reportGaugeName", "reportGaugeNameText",
+                     "reportCharacteristic", "reportCharacteristicText", "reportGaugeNumber", "reportGaugeNumberText",
+                     "reportTolerance", "reportToleranceText", "reportLocation", "reportLocationText",
+                     "reportPerformedBy", "reportPerformedByText", "reportDate", "reportDateText",
+                     "reportGaugeTable", "reportVariationComponents", "reportMeasurementsByPartPlot",
+                     "reportRChartByOperator", "reportMeasurementsByOperatorPlot", "reportAverageChartByOperator",
+                     "reportPartByOperatorPlot", "reportTrafficLightChart")
 
-  jaspResults[["gaugeByPart"]] <- createJaspPlot(title = gettext("Measurements by part"),
-                                                 width = 700, height = 300)
-  jaspResults[["gaugeByPart"]]$position <- 12
-  jaspResults[["gaugeByPart"]]$dependOn(c("partMeasurementPlot", "partMeasurementPlotAllValues", "operatorWideFormat",
-                                          "operatorLongFormat", "partWideFormat", "partLongFormat",
-                                          "measurementsWideFormat", "measurementLongFormat", "report"))
+#### Data reading & error checks ----
+.msabVariables <- function(options) {
+  wideFormat <- options[["dataFormat"]] == "wideFormat"
 
-  if(!ready) {
-    return()
-  }
-
-  jaspResults[["gaugeByPart"]]$plotObject <- .gaugeByPartGraphPlotObject(dataset, measurements, parts, operators,
-                                                                         displayAll = options$partMeasurementPlotAllValues)
-
-  return()
-}
-
-.createMeasureByOperatorPlot <- function(jaspResults, dataset, measurements, operators, parts, options, ready, Type3) {
-  if(!is.null(jaspResults[["gaugeByOperator"]])) {
-    return()
-  }
-
-  jaspResults[["gaugeByOperator"]] <- createJaspPlot(title = gettext("Measurements by operator"),
-                                                     width = 600, height = 600)
-  jaspResults[["gaugeByOperator"]]$position <- 13
-  jaspResults[["gaugeByOperator"]]$dependOn(c("operatorMeasurementPlot", "operatorWideFormat", "operatorLongFormat",
-                                            "partWideFormat", "partLongFormat", "measurementsWideFormat",
-                                            "measurementLongFormat", "report"))
-
-  if(!ready) {
-    return()
-  }
-
-  jaspResults[["gaugeByOperator"]]$plotObject <- .gaugeByOperatorGraphPlotObject(dataset, measurements, parts, operators, options, Type3)
-
-  return()
-}
-
-.createPartByOperatorInterPlot <- function(jaspResults, dataset, measurements, operators, parts, options, ready, Type3) {
-  if(!is.null(jaspResults[["gaugeByInteraction"]])) {
-    return()
-  }
-
-  jaspResults[["gaugeByInteraction"]] <- createJaspPlot(title = gettext("Part by operator interaction"),
-                                                        width = 700, height = 400)
-  jaspResults[["gaugeByInteraction"]]$position <- 14
-  jaspResults[["gaugeByInteraction"]]$dependOn(c("partByOperatorMeasurementPlot", "operatorWideFormat", "operatorLongFormat",
-                                               "partWideFormat", "partLongFormat", "measurementsWideFormat",
-                                               "measurementLongFormat", "report"))
-
-  if(!ready) {
-    return()
-  }
-
-  jaspResults[["gaugeByInteraction"]]$plotObject <- .gaugeByInteractionGraphPlotFunction(dataset, measurements, parts, operators, options, Type3 = Type3, ggPlot = TRUE)
-
-  return()
-}
-
-.createVarCompPlot <- function(jaspResults, options, ready, plotOnly = FALSE) {
-  if(!plotOnly) {
-    if(!is.null(jaspResults[["varCompPlot"]])) {
-      return()
-    }
-    varCompPlot <- createJaspPlot(title = gettext("Components of variation"), width = 850, height = 500)
-    varCompPlot$position <- 7
-    varCompPlot$dependOn(c(.varCompTableDependencies(), "varianceComponentsGraph",
-                           "tolerance", "toleranceValue",
-                           "studyVarianceMultiplierType", "studyVarianceMultiplierValue"))
-    jaspResults[["varCompPlot"]] <- varCompPlot
-
-    if(!ready) {
-      return()
-    }
-  }
-  # obtain summaries
-  percContrib <- .percentSampleSummaries(jaspResults[["percContribSamples"]][["object"]], options)
-  percStudyVar <- .percentSampleSummaries(jaspResults[["percStudySamples"]][["object"]], options)
-
-  # remove unnecessary rows
-  percContrib <- percContrib[!percContrib$sourceName %in% c("Operator", "Total variation"), ]
-  percStudyVar <- percStudyVar[!percStudyVar$sourceName %in% c("Operator", "Total variation"), ]
-
-  # values for credible intervals
-  errorbarDf <- rbind(percContrib[, c("lower", "upper")], percStudyVar[, c("lower", "upper")])
-
-  # adding NAs for the reproducibility row because the plotting function expects the row to be present
-  if(options$type3) {
-    percContrib <- rbind(percContrib[1:2, ], NA, percContrib[3, ])
-    percStudyVar <- rbind(percStudyVar[1:2, ], NA, percStudyVar[3, ])
-  }
-
-  if(options$tolerance) {
-    percTol <- .percentSampleSummaries(jaspResults[["percTolSamples"]][["object"]], options)
-
-    # remove unnecessary rows
-    percTol <- percTol[!percTol$sourceName %in% c("Operator", "Total variation"), ]
-
-    errorbarDf <- rbind(errorbarDf, percTol[, c("lower", "upper")])
-
-    if(options$type3) {
-      percTol <- rbind(percTol[1:2, ], NA, percTol[3, ])
-    }
-
-    p <- .gaugeVarCompGraph(percContrib$means, percStudyVar$means, percTol$means,
-                            errorbarDf = errorbarDf, Type3 = options$type3)
+  if (wideFormat) {
+    measurements <- unlist(options[["measurementsWideFormat"]])
+    parts        <- options[["partWideFormat"]]
+    operators    <- options[["operatorWideFormat"]]
   } else {
-    p <- .gaugeVarCompGraph(percContrib$means, percStudyVar$means, NA,
-                            errorbarDf = errorbarDf, Type3 = options$type3)
+    measurements <- unlist(options[["measurementLongFormat"]])
+    parts        <- options[["partLongFormat"]]
+    operators    <- options[["operatorLongFormat"]]
   }
 
-  if(plotOnly) {
-    return(p)
+  # a type 3 study has no operators; a constant dummy factor is added to the data
+  if (options[["type3"]])
+    operators <- "operators"
+
+  list(wideFormat   = wideFormat,
+       measurements = measurements[measurements != ""],
+       parts        = parts,
+       operators    = operators)
+}
+
+.msabIsReady <- function(vars) {
+  minMeasurements <- if (vars[["wideFormat"]]) 2 else 1
+  length(vars[["measurements"]]) >= minMeasurements && vars[["parts"]] != "" && vars[["operators"]] != ""
+}
+
+.msabReadDataset <- function(dataset, options, vars) {
+  measurements <- vars[["measurements"]]
+  parts        <- vars[["parts"]]
+  operators    <- vars[["operators"]]
+  factorVars   <- if (options[["type3"]]) parts else c(parts, operators)
+
+  if (is.null(dataset))
+    dataset <- .readDataSetToEnd(columns.as.numeric = measurements, columns.as.factor = factorVars)
+
+  dataset <- as.data.frame(dataset)[c(measurements, factorVars)]
+  for (v in factorVars)
+    dataset[[v]] <- as.factor(dataset[[v]])
+  if (options[["type3"]])
+    dataset[[operators]] <- factor(rep(1, nrow(dataset)))
+
+  .hasErrors(dataset, type = c("missingValues", "infinity"),
+             missingValues.target = c(measurements, factorVars),
+             infinity.target      = measurements,
+             exitAnalysisIfErrors = TRUE)
+
+  if (vars[["wideFormat"]]) {
+    dataWide        <- dataset
+    dataLong        <- as.data.frame(.convertToLong(dataset, measurements))
+    measurementLong <- "Measurements" # name assigned to the column inside the conversion function
   } else {
-    varCompPlot$plotObject <- p
+    dataLong        <- dataset
+    dataWide        <- .convertToWide(dataset, measurements, parts, operators)
+    measurementLong <- measurements
   }
 
-  return()
+  vars[["measurementLong"]]  <- measurementLong
+  vars[["measurementsWide"]] <- setdiff(colnames(dataWide), c(parts, operators))
+
+  .msabCheckDesign(dataLong, dataWide, options, vars)
+
+  list(long = dataLong, wide = dataWide, vars = vars)
 }
 
-.createTrafficLightPlot <- function(jaspResults, options, ready, plotOnly = FALSE) {
-  if(!plotOnly) {
-    if(!is.null(jaspResults[["trafficPlot"]])) {
-      return()
-    }
+.msabCheckDesign <- function(dataLong, dataWide, options, vars) {
+  parts     <- vars[["parts"]]
+  operators <- vars[["operators"]]
 
-    trafficPlot <- createJaspContainer(title = gettext("Traffic light chart"))
-    trafficPlot$position <- 15
-    trafficPlot$dependOn(c(.varCompTableDependencies(), "trafficLightChart",
-                           "tolerance", "toleranceValue",
-                           "studyVarianceMultiplierType", "studyVarianceMultiplierValue"))
-    jaspResults[["trafficPlot"]] <- trafficPlot
+  if (!options[["type3"]] && nlevels(droplevels(dataLong[[operators]])) == 1)
+    .quitAnalysis(gettext("This dataset seems to have only a single unique operator. Please use the Type 3 study by checking the box below."))
 
-    if(!ready) {
-      jaspResults[["trafficPlot"]][["plot"]] <- createJaspPlot(width = 1000)
-      return()
-    }
+  if (nlevels(droplevels(dataLong[[parts]])) < 2)
+    .quitAnalysis(gettext("At least two different parts are required."))
+
+  if (!options[["type3"]] && !.checkIfCrossed(dataLong, operators, parts, vars[["measurementLong"]]))
+    .quitAnalysis(gettext("Design is not balanced: not every operator measured every part. Use non-replicable gauge r&R."))
+
+  # in wide format every part/operator combination should occupy a single row
+  if (vars[["wideFormat"]] && !options[["type3"]]) {
+    nRows <- max(table(dataWide[[parts]], dataWide[[operators]]))
+    if (nRows > 1)
+      .quitAnalysis(gettextf("The measurements selected seem to be in a 'Single Column' format as every operator's part is measured %s times.", nRows))
   }
 
-  # % Study var
-  percStudyVar <- .percentSampleSummaries(jaspResults[["percStudySamples"]][["object"]], options)
-  percStudyVar <- percStudyVar[percStudyVar$sourceName == "Total gauge r&R", ]
-  percStudyVarMean <- percStudyVar$means
-  percStudyVarCrI <- data.frame(lower = as.numeric(percStudyVar["lower"]),
-                                upper = as.numeric(percStudyVar["upper"]))
-
-  if(!options$tolerance) {
-    p <- .trafficplot(StudyVar = percStudyVarMean, ToleranceUsed = FALSE,
-                      ToleranceVar = 0,
-                      options = options, ready = TRUE, StudyVarCi = percStudyVarCrI)
-  } else {
-    # % Tolerance
-    trafficPlotTol <- createJaspPlot(width = 1000)
-    trafficPlotTol$position <- 2
-    percTol <- .percentSampleSummaries(jaspResults[["percTolSamples"]][["object"]], options)
-    percTol <- percTol[percTol$sourceName == "Total gauge r&R", ]
-    percTolMean <- percTol$means
-    percTolCrI <- data.frame(lower = as.numeric(percTol["lower"]),
-                             upper = as.numeric(percTol["upper"]))
-
-    p <- .trafficplot(StudyVar = percStudyVarMean, ToleranceUsed = TRUE,
-                      ToleranceVar = percTolMean,
-                      options = options, ready = TRUE,
-                      StudyVarCi = percStudyVarCrI,
-                      TolCi = percTolCrI,
-                      ggPlot = plotOnly)
-  }
-
-  if(plotOnly) {
-    return(p)
-  } else {
-    trafficPlot[["trafficPlot"]] <- p
-  }
-  return()
-}
-
-#### Models & statistical computations
-.runMCMC <- function(jaspResults, dataset, measurements, parts, operators, options, ready){
-  if(is.null(jaspResults[["MCMCsamples"]]) && ready){
-    MCMCsamples <- createJaspState()
-    MCMCsamples$dependOn(.mcmcDependencies())
-    jaspResults[["MCMCsamples"]] <- MCMCsamples
-  } else {
-    return()
-  }
-
-  if(!options$type3){
-    # obtain BF in favor of full over main effects model
-    excludeInter <- .evalInter(jaspResults, parts, operators, options)
-    if(excludeInter){
-      formula <- as.formula(paste(measurements, "~", parts, "+", operators))
-    } else {
-      formula <- as.formula(paste(measurements, "~", parts, "*", operators))
-    }
-    # fit the model with BayesFactor
-    fit <- try(BayesFactor::lmBF(formula, whichRandom = c(parts, operators),
-                                 data = dataset, rscaleRandom = options$rscalePrior))
-  } else {
-    formula <- as.formula(paste(measurements, "~", parts))
-    fit <- try(BayesFactor::lmBF(formula, whichRandom = parts,
-                                 data = dataset, rscaleRandom = options$rscalePrior))
-  }
-
-  if(isTryError(fit)) {
-    .quitAnalysis(gettextf("The BayesFactor model could not be fit: %s", .rmNewLine(fit)))
-  }
-
-  nchains <- options$mcmcChains
-  burnin <- options$mcmcBurnin
-  iter <- options$mcmcIterations
-
-  # get relevant parameters
-  paramNames <- .bfParameterNames(parts, operators, excludeInter, options)
-  paramNames <- c(paramNames, "sig2")
-
-  # initiate array
-  mcmcArray <- array(dim = c(iter - burnin, nchains, length(paramNames)))
-
-  if(options$setSeed) {
-    set.seed(options$seed)
-  }
-
-  for(i in 1:nchains) {
-    # run chain
-    mcmcChain <- BayesFactor::posterior(fit, iterations = iter)
-
-    # select subset
-    mcmcChain <- as.matrix(mcmcChain)
-    mcmcChain <- mcmcChain[, paramNames]
-
-    # discard burnin
-    mcmcChain <- mcmcChain[-(1:burnin), ]
-
-    # revert standardization
-    for(j in paramNames[paramNames != "sig2"]) {
-      mcmcChain[, j] <- mcmcChain[, j] * mcmcChain[, "sig2"]
-    }
-
-    mcmcArray[, i, ] <- mcmcChain
-  }
-
-  dimnames(mcmcArray) <- list(NULL, NULL, paramNames)
-  MCMCsamples[["object"]] <- mcmcArray
-
-  return()
-}
-
-.getVarianceComponents <- function(jaspResults, parts, operators, options) {
-  excludeInter <- .evalInter(jaspResults, parts, operators, options)
-
-  # get components from MCMC samples
-  internalDF <- .getComponentsFromSamples(jaspResults, parts, operators, options, excludeInter)
-
-  # calculate summary stats
-  postMeans <- colMeans(internalDF)
-  postSds <- apply(internalDF, 2, sd)
-  postCrIlower <- apply(internalDF, 2, quantile, probs = 0.025)
-  postCrIupper <- apply(internalDF, 2, quantile, probs = 0.975)
-
-  # remove some stats when historicalSd is specified
-  if(options$processVariationReference == "historicalSd"){
-    postSds["part"] <- ""
-    postSds["total"] <- ""
-    postCrIlower["part"] <- ""
-    postCrIlower["total"] <- ""
-    postCrIupper["part"] <- ""
-    postCrIupper["total"] <- ""
-  }
-  sourceName <- .sourceNames(options)
-
-  return(data.frame(sourceName,
-                    postMeans,
-                    postSds,
-                    postCrIlower,
-                    postCrIupper)
-  )
-}
-
-.getComponentsFromSamples <- function(jaspResults, parts, operators, options, excludeInter){
-  # note this could be written into a helper function
-  sigmaPart <- paste0("g_", parts)
-  sigmaOperator <- paste0("g_", operators)
-  sigmaInter <- paste0("g_", parts, ":", operators)
-
-  samplesMat <- .arrayToMat(jaspResults[["MCMCsamples"]][["object"]])
-  samplesMat <- as.matrix(samplesMat)
-
-  repeatability <- samplesMat[, "sig2"]
-  part <- samplesMat[, sigmaPart]
-  if(!options$type3) {
-    # obtain relevant components
-    if(excludeInter){
-      reprod <- samplesMat[, sigmaOperator]
-    } else {
-      reprod <- samplesMat[, sigmaOperator] + samplesMat[, sigmaInter]
-    }
-    gauge <- reprod + repeatability
-    operator <- samplesMat[, sigmaOperator]
-  } else {
-    gauge <- repeatability
-  }
-  total <- gauge + part
-
-  # replace total variation with historical variance and adjust
-  # part variation accordingly
-  if(options$processVariationReference == "historicalSd"){
-    totalOld <- mean(total)
-    total <- rep(options$historicalSdValue^2, length(repeatability))
-    diffTotals <- total - totalOld
-    part <- mean(part) + diffTotals
-  }
-
-  if(!options$type3) {
-    internalDF <- data.frame(gauge,
-                             repeatability,
-                             reprod,
-                             operator,
-                             part,
-                             total
-    )
-  } else {
-    internalDF <- data.frame(gauge,
-                             repeatability,
-                             part,
-                             total)
-  }
-  return(internalDF)
-}
-
-.getDistinctCategories <- function(jaspResults, parts, operators, options) {
-  excludeInter <- .evalInter(jaspResults, parts, operators, options)
-  internalDf <- .getComponentsFromSamples(jaspResults, parts, operators, options, excludeInter)
-
-  # subset with relevant variables
-  internalDf <- internalDf[, colnames(internalDf) %in% c("gauge", "part")]
-  sdDf <- sqrt(internalDf)
-
-  # number distinct categories
-  nCat <- (sdDf$part / sdDf$gauge) * 1.41
-  mean <- mean(nCat)
-  lower <- quantile(nCat, probs = 0.025)
-  upper <- quantile(nCat, probs = 0.975)
-
-  # for footnote and report
-  res <- paste0(round(mean, 2), " (", round(lower, 2), ", ", round(upper, 2), ")")
-
-  return(res)
-}
-
-.getEllipses <- function(contourDf, mu, options, numberEllipses = 20, meanEllipse = FALSE) {
-
-  if(options$setSeed) {
-    set.seed(options$seed)
-  }
-  if(meanEllipse) {
-    sigmaP <- mean(contourDf$part)
-    sigmaTotal <- mean(contourDf$total)
-
-    covMat <- matrix(c(sigmaTotal, sigmaP,
-                       sigmaP, sigmaP),
-                     nrow = 2, ncol = 2)
-    res <- as.data.frame(try(ellipse::ellipse(covMat, centre = c(mu, mu), level = 0.95)))
-
-    if(isTryError(res)) {
-      return(res)
-    }
-  } else { # note: this part is currently not used
-    ind <- sample(1:nrow(contourDf), numberEllipses)
-    ellipseList <- lapply(ind, function(i) {
-      sigmaP <- contourDf[i, ]$part # part
-      sigmaTotal <- contourDf[i, ]$total # total
-
-      covMat <- matrix(c(sigmaTotal, sigmaP,
-                         sigmaP, sigmaP),
-                       nrow = 2, ncol = 2)
-
-      # ellipse
-      ellipseDf <- as.data.frame(try(ellipse::ellipse(covMat, centre = c(mu, mu), level = 0.95)))
-      ellipseDf$iter <- i
-
-      return(ellipseDf)
-    })
-    res <- do.call(rbind.data.frame, ellipseList)
-  }
-
-  return(res)
-}
-
-.getRisks <- function(contourDf, mu, options) {
-
-  USL <- options$contourUSL
-  LSL <- options$contourLSL
-  producers <- consumers <- c()
-
-  for (i in 1:nrow(contourDf)) {
-    sigmaP <- contourDf[i, ]$part # part
-    sigmaTotal <- contourDf[i, ]$total # total
-
-    covMat <- matrix(c(sigmaTotal, sigmaP,
-                       sigmaP, sigmaP),
-                     nrow = 2, ncol = 2)
-
-    # producer's risk (delta)
-    # probability that y falls outside although x is inside
-    numerator <- try(mvtnorm::pmvnorm(lower = c(-Inf, LSL), upper = c(LSL, USL), mean = c(mu, mu),
-                                      sigma = covMat) +
-                       mvtnorm::pmvnorm(lower = c(USL, LSL), upper = c(Inf, USL), mean = c(mu, mu), sigma = covMat))
-
-    # the error likely occurs somewhere else
-    if(isTryError(numerator) || is.nan(numerator)) {
-      class(numerator) <- "try-error"
-      return(numerator)
-    }
-
-    denom <- pnorm(USL, mean = mu, sd = sqrt(sigmaP)) - pnorm(LSL, mean = mu, sd = sqrt(sigmaP))
-
-    if(isTryError(denom) || is.nan(denom)) {
-      class(denom) <- "try-error"
-      return(denom)
-    }
-
-    producers[i] <- numerator / denom
-
-    # consumers risk
-    # probability that y is inside although x falls outside
-    numerator <- try(mvtnorm::pmvnorm(lower = c(LSL, -Inf), upper = c(USL, LSL), mean = c(mu, mu),
-                                      sigma = covMat) +
-                       mvtnorm::pmvnorm(lower = c(LSL, USL), upper = c(USL, Inf), mean = c(mu, mu), sigma = covMat))
-
-    if(isTryError(numerator) || is.nan(numerator)) {
-      class(numerator) <- "try-error"
-      return(numerator)
-    }
-
-    denom <- 1 - denom
-
-    consumers[i] <- numerator / denom
-  }
-  # this is the issue here
-  if(any(is.na(consumers)) || any(is.na(producers))) {
-    consumers <- "NA's introduced during calculation."
-    class(consumers) <- "try-error"
-    return(consumers)
-  }
-
-  df <- data.frame(delta = producers,
-                   beta = consumers)
-  # means
-  means <- apply(df, 2, mean)
-
-  # CrIs
-  lower <- apply(df, 2, quantile, probs = 0.025)
-  upper <- apply(df, 2, quantile, probs = 0.975)
-
-  # unicodes
-  risks <- c("\u03b4", "\u03b2")
-
-  return(data.frame(risks,
-                    means,
-                    lower,
-                    upper))
-
-}
-
-.getPercContrib <- function(jaspResults, parts, operators, options, ready) {
-  if(is.null(jaspResults[["percContribSamples"]]) && ready) {
-    percContribSamples <- createJaspState()
-    percContribSamples$dependOn(.varCompTableDependencies())
-    jaspResults[["percContribSamples"]] <- percContribSamples
-  } else {
-    return()
-  }
-
-  excludeInter <- .evalInter(jaspResults, parts, operators, options)
-
-  # get components from MCMC samples
-  internalDF <- .getComponentsFromSamples(jaspResults, parts, operators, options, excludeInter)
-
-  # %Contribution to total variance
-  contribution <- matrix(ncol = ncol(internalDF), nrow = nrow(internalDF))
-  for(i in 1:ncol(internalDF)){
-    contribution[, i] <- internalDF[[i]] / internalDF$total * 100
-  }
-
-  percContribSamples[["object"]] <- contribution
-
-  return()
-}
-
-.getPercStudy <- function(jaspResults, ready, studyVar = jaspResults[["studyVariation"]][["object"]][[1]]) {
-  if(is.null(jaspResults[["percStudySamples"]]) && ready) {
-    percStudySamples <- createJaspState()
-    percStudySamples$dependOn(c(.varCompTableDependencies(),
-                                "studyVarianceMultiplierType", "studyVarianceMultiplierValue"))
-    jaspResults[["percStudySamples"]] <- percStudySamples
-  } else {
-    return()
-  }
-
-  percStudy <- matrix(ncol = ncol(studyVar), nrow = nrow(studyVar))
-  for(i in 1:ncol(studyVar)){
-    percStudy[, i] <- studyVar[[i]] / studyVar$total * 100
-  }
-
-  percStudySamples[["object"]] <- percStudy
-
-  return()
-}
-
-.getPercTol <- function(jaspResults, options, ready, studyVar = jaspResults[["studyVariation"]][["object"]][[1]]) {
-  if(is.null(jaspResults[["percTolSamples"]]) && ready) {
-    percTolSamples <- createJaspState()
-    percTolSamples$dependOn(c(.varCompTableDependencies(),
-                              "studyVarianceMultiplierType", "studyVarianceMultiplierValue", "tolerance", "toleranceValue"))
-    jaspResults[["percTolSamples"]] <- percTolSamples
-  } else {
-    return()
-  }
-
-  percTol <- matrix(ncol = ncol(studyVar), nrow = nrow(studyVar))
-  for(i in 1:ncol(studyVar)){
-    percTol[, i] <- studyVar[[i]] / options$toleranceValue * 100
-  }
-
-  percTolSamples[["object"]] <- percTol
-
-  return()
-}
-
-.getStudyVariation <- function(jaspResults, parts, operators, options, ready) {
-  if(is.null(jaspResults[["studyVariation"]]) && ready) {
-    studyVariation <- createJaspState()
-    studyVariation$dependOn(c(.varCompTableDependencies(),
-                              "studyVarianceMultiplierType", "studyVarianceMultiplierValue"))
-    jaspResults[["studyVariation"]] <- studyVariation
-  } else {
-    return()
-  }
-
-  excludeInter <- .evalInter(jaspResults, parts, operators, options)
-
-  # get components from MCMC samples
-  internalDF <- .getComponentsFromSamples(jaspResults, parts, operators, options, excludeInter)
-
-  sdDf <- sqrt(internalDF)
-
-  # get factor for multiplication
-  if(options$studyVarianceMultiplierType == "sd") {
-    factorSd <- options$studyVarianceMultiplierValue
-  } else {
-    val <- options$studyVarianceMultiplierValue / 100
-    q <- (1 - val) / 2
-    factorSd <- abs(2 * qnorm(q))
-  }
-  studyVar <- sdDf * factorSd
-
-  studyVariation[["object"]] <- list(studyVar, factorSd)
-
-  return()
-}
-
-#### helper functions
-.checkProbabilityEstimates <- function(estimates) {
-  l <- list()
-  # check for too large cut-off
-  l[["large"]] <- ifelse(anyNA(estimates), TRUE, FALSE)
-
-  # check for negative estimates
-  if(any(estimates[!is.na(estimates)] < 0)) {
-    estimates[!is.na(estimates) & estimates < 0] <- NA
-    l[["negative"]] <- TRUE
-  } else {
-    l[["negative"]] <- FALSE
-  }
-
-  l[["estimates"]] <- estimates
-
-  return(l)
-}
-
-.hasExtremeValues <- function(df) {
-  nums <- unlist(df, use.names = FALSE)
-  nums <- suppressWarnings(as.numeric(nums))
-  nums <- nums[!is.na(nums)]
-
-  res <- list(large = FALSE, small = FALSE)
-  if(sum(nums > 1e50) != 0) {
-    res$large <- TRUE
-  }
-
-  if(sum(nums < 1e-50) != 0) {
-    res$small <- TRUE
-  }
-
-  return(res)
-}
-
-.rmNewLine <- function(msg) {
-  msg <- gsub("\\n ", "", msg)
-  msg <- gsub("\\n", "", msg)
-
-  return(msg)
-}
-
-.getDistNames <- function(distType) {
-  switch(distType,
-         "gig" = "generalized inverse Gaussian",
-         "metalog" = "Metalog")
-}
-
-.bfParameterNames <- function(parts, operators, excludeInter, options) {
-  sigmaPart <- paste0("g_", parts)
-  sigmaOperator <- paste0("g_", operators)
-  sigmaInter <- paste0("g_", parts, ":", operators)
-
-  if(!options$type3) {
-    if(excludeInter) {
-      res <- c(sigmaPart, sigmaOperator)
-    } else {
-      res <- c(sigmaPart, sigmaOperator, sigmaInter)
-    }
-  } else {
-    res <- sigmaPart
-  }
-  return(res)
-}
-
-.evalInter <- function(jaspResults, parts, operators, options) {
-  if(options$estimationType == "automatic") {
-    bfDf <- jaspResults[["modelComparison"]][["object"]]
-    main <- paste(parts, "+", operators)
-
-    excludeInter <- bfDf[main, ]$comparisonBF <= options$bfFavorFull
-  }
-
-  if(options$estimationType == "manual"){
-    if(options$modelType == "fullModel"){
-      excludeInter <- FALSE
-    }
-
-    if(options$modelType == "mainEffectsOnly"){
-      excludeInter <- TRUE
-    }
-  }
-
-  return(excludeInter)
-}
-
-.sourceNames <- function(options) {
-  if(options$type3) {
-    res <- c("Total gauge r&R",
-             "Repeatability",
-             "Part-to-part",
-             "Total variation")
-  } else {
-    res <- c("Total gauge r&R",
-             "Repeatability",
-             "Reproducibility",
-             "Operator",
-             "Part-to-part",
-             "Total variation")
-  }
-
-  return(res)
-}
-
-.bfTableDependencies <- function() {
-  return(c("operatorWideFormat", "operatorLongFormat", "partWideFormat", "partLongFormat", "measurementsWideFormat",
-           "measurementLongFormat", "seed", "setSeed", "rscalePrior", "RRTable", "bfFavorFull", "report", "type3"))
-}
-
-.varCompTableDependencies <- function() {
-  return(c("operatorWideFormat", "operatorLongFormat", "partWideFormat", "partLongFormat", "measurementsWideFormat",
-           "measurementLongFormat", "seed", "setSeed", "rscalePrior", "bfFavorFull",
-           "mcmcChains", "mcmcBurnin", "mcmcIterations", "historicalSdValue", "processVariationReference",
-           "estimationType", "modelType", "report", "type3", "RRTable"))
-}
-
-.mcmcDependencies <- function() {
-  return(c("operatorWideFormat", "operatorLongFormat", "partWideFormat", "partLongFormat", "measurementsWideFormat",
-           "measurementLongFormat", "seed", "setSeed", "rscalePrior", "bfFavorFull",
-           "mcmcChains", "mcmcBurnin", "mcmcIterations",
-           "estimationType", "modelType", "report", "type3"))
-}
-
-.postPlotDependencies <- function() {
-  return(c("posteriorCi", "posteriorCiLower", "posteriorCiMass", "posteriorCiType", "posteriorCiUpper",
-           "posteriorPointEstimate", "posteriorPointEstimateType", "posteriorPlot",
-           "distType", "posteriorPlotType", "tolerance", "toleranceValue", "posteriorHistogram", "report", "type3",
-           "processVariationReference", "historicalSdValue", "customCiType",
-           "posteriorCiCutOff"))
-}
-
-.convertOutputNames <- function(name, parts, operators, includeSigma = TRUE) {
-  sigmaPart <- paste0("g_", parts)
-  sigmaOperator <- paste0("g_", operators)
-  sigmaInter <- paste0("g_", parts, ":", operators)
-  if(includeSigma) {
-    replPart <- "\u03C3<sup>2</sup><sub>Part</sub>"
-    replOperator <- "\u03C3<sup>2</sup><sub>Operator</sub>"
-    replInter <- "\u03C3<sup>2</sup><sub>Part\u2009\u273B\u2009Operator</sub>"
-    replError <- "\u03C3<sup>2</sup><sub>Error</sub>"
-  } else {
-    replPart <- "Part"
-    replOperator <- "Operator"
-    replInter <- "Part\u2009\u273B\u2009Operator"
-    replError <- "Error"
-  }
-
-  name <- sub(sigmaInter, replInter, name)
-  name <- sub(sigmaPart, replPart, name)
-  name <- sub(sigmaOperator, replOperator, name)
-  name <- sub("sig2", replError, name)
-
-  return(name)
-}
-
-.percentSampleSummaries <- function(samples, options) {
-  sourceName <- .sourceNames(options)
-  means <- colMeans(samples)
-  lower <- apply(samples, 2, quantile, probs = 0.025)
-  upper <- apply(samples, 2, quantile, probs = 0.975)
-
-  df <- data.frame(sourceName,
-                   means,
-                   lower,
-                   upper)
-
-  # remove upper and lower CrI for total variation
-  df[df$sourceName == "Total variation", c("lower", "upper")] <- "" # note: this coerces the whole columns to be of type chr
-
-  # remove upper and lower CrI for part variation if historicalSd is specified
-  if(options$processVariationReference == "historicalSd") {
-    df[df$sourceName == "Part-to-part", c("lower", "upper")] <- ""
-  }
-  return(df)
-}
-
-.fillTablesGaugeEval <- function(jaspResults, parts, operators, options, whichTable = "sd", gaugeReport = FALSE) {
-  excludeInter <- .evalInter(jaspResults, parts, operators, options)
-
-  # get components from MCMC samples
-  internalDF <- .getComponentsFromSamples(jaspResults, parts, operators, options, excludeInter)
-
-  sourceName <- .sourceNames(options)
-
-  sdDf <- sqrt(internalDF)
-
-  # Study variation
-  studyVar <- jaspResults[["studyVariation"]][["object"]][[1]]
-
-  # % Study Variation
-  percStudy <- jaspResults[["percStudySamples"]][["object"]]
-
-  # % Tolerance
-  if(options$tolerance) {
-    percTol <- jaspResults[["percTolSamples"]][["object"]]
-  }
-
-  # output dependent on table
-  if(whichTable == "sd") {
-    # summaries
-    # note: here I could use the .percentSampleSummaries function
-    means <- colMeans(sdDf)
-    lower <- apply(sdDf, 2, quantile, probs = 0.025)
-    upper <- apply(sdDf, 2, quantile, probs = 0.975)
-  }
-
-  if(whichTable == "studyVar") {
-    if(!gaugeReport) {
-      # add footnote
-      factorSd <- jaspResults[["studyVariation"]][["object"]][[2]]
-
-      if(factorSd == as.integer(factorSd)) {
-        jaspResults[["gaugeEvaluation"]][["stdTable"]]$addFootnote(gettextf("Study variation is calculated as std. dev. <span>&#215;</span> %d", factorSd))
-      } else {
-        jaspResults[["gaugeEvaluation"]][["stdTable"]]$addFootnote(gettextf("Study variation is calculated as std. dev. <span>&#215;</span> %.2f", factorSd))
-      }
-    }
-
-    # summaries
-    means <- colMeans(studyVar)
-    lower <- apply(studyVar, 2, quantile, probs = 0.025)
-    upper <- apply(studyVar, 2, quantile, probs = 0.975)
-  }
-
-  if(whichTable == "percStudyVar") {
-    # summaries
-    means <- colMeans(percStudy)
-    lower <- apply(percStudy, 2, quantile, probs = 0.025)
-    upper <- apply(percStudy, 2, quantile, probs = 0.975)
-  }
-
-  if(whichTable == "percTol") {
-    # summaries
-    means <- colMeans(percTol)
-    lower <- apply(percTol, 2, quantile, probs = 0.025)
-    upper <- apply(percTol, 2, quantile, probs = 0.975)
-  }
-
-  df <- data.frame(sourceName,
-                   means,
-                   lower,
-                   upper)
-
-  if(whichTable == "percStudyVar") {
-    # remove upper and lower CrI for total variation
-    df[df$sourceName == "Total variation", c("lower", "upper")] <- ""
-  }
-
-
-  if(options$processVariationReference == "historicalSd") {
-    # remove upper and lower CrI for part variation if historicalSd is specified
-    df[df$sourceName == "Part-to-part", c("lower", "upper")] <- ""
-
-    # remove upper and lower CrI for total variation
-    df[df$sourceName == "Total variation", c("lower", "upper")] <- ""
-  }
-
-  colnames(df) <- switch(whichTable,
-                         "sd" = c("sourceName", "meansStd", "lowerStd", "upperStd"),
-                         "studyVar" = c("sourceName", "meansStudyVar", "lowerStudyVar", "upperStudyVar"),
-                         "percStudyVar" = c("sourceName", "meansPercStudy", "lowerPercStudy", "upperPercStudy"),
-                         "percTol" = c("sourceName", "meansPercTol", "lowerPercTol", "upperPercTol"))
-
-  return(df)
+  # long data with unequal numbers of replicates leads to NAs after conversion to wide format
+  if (anyNA(dataWide))
+    .quitAnalysis(gettext("Number of replicates differ per operator/part. Make sure that each operator measures each part equally often."))
+
+  if (length(vars[["measurementsWide"]]) < 2)
+    .quitAnalysis(gettext("At least two measurements per part and operator are required."))
 }
 
 .convertToWide <- function(dataset, measurements, parts, operators) {
@@ -1692,8 +219,8 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options, ...) {
     )
   )
 
-  dataWide <- tidyr::pivot_wider(dataset, id_cols = c(parts, operators), values_from = measurements,
-                                 names_from = trial, names_prefix = "V")
+  dataWide <- tidyr::pivot_wider(dataset, id_cols = dplyr::all_of(c(parts, operators)), values_from = dplyr::all_of(measurements),
+                                 names_from = "trial", names_prefix = "V")
   dataWide <- as.data.frame(dataWide)
   dataWide <- dataWide[order(dataWide[, parts]), ]
 
@@ -1701,597 +228,128 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options, ...) {
 }
 
 .convertToLong <- function(dataset, measurements) {
-  dataset <- tidyr::pivot_longer(dataset, cols = tidyr::all_of(measurements),
-                                 values_to = "Measurements", names_to = NULL)
-  return(dataset)
+  tidyr::pivot_longer(dataset, cols = tidyr::all_of(measurements),
+                      values_to = "Measurements", names_to = NULL)
 }
 
-#### Distribution fitting
-
-### fit functions
-.fitDistToSamples <- function(jaspResults, options, ready) {
-  if(is.null(jaspResults[["distFit"]]) && ready){
-    distFit <- createJaspState()
-    distFit$dependOn(c(.mcmcDependencies(), "distType", "posteriorPlotType",
-                       "processVariationReference", "historicalSdValue",
-                       "tolerance", "toleranceValue"))
-    jaspResults[["distFit"]] <- distFit
+#### Models ----
+.msabFitModels <- function(jaspResults, dataLong, options, vars) {
+  # models needed: the one used for estimation and, for the model comparison, the other one
+  needed <- if (options[["type3"]]) {
+    "full"
+  } else if (options[["estimationType"]] == "automatic" || (options[["RRTable"]] && !options[["report"]])) {
+    c("main", "full")
+  } else if (options[["modelType"]] == "mainEffectsOnly") {
+    "main"
   } else {
-    return()
+    "full"
   }
 
-  samplesMat <- switch(options$posteriorPlotType,
-                       "var" = .arrayToMat(jaspResults[["MCMCsamples"]][["object"]]),
-                       "percContrib" = jaspResults[["percContribSamples"]][["object"]],
-                       "percStudyVar" = jaspResults[["percStudySamples"]][["object"]],
-                       "percTol" = jaspResults[["percTolSamples"]][["object"]])
-
-  if(options$posteriorPlotType != "var") {
-    colnames(samplesMat) <- .sourceNames(options)
-
-    # filter out columns that only have the same value
-    samplesMat <- samplesMat[, apply(samplesMat, 2, function(col) length(unique(col)) > 1)]
-
-    # remove part-to-part variation if historical sd is specified
-    if(options$processVariationReference == "historicalSd"){
-      samplesMat <- samplesMat[, !colnames(samplesMat) %in% "Part-to-part"]
-    }
+  state <- jaspResults[["modelFits"]]
+  if (is.null(state)) {
+    state <- createJaspState()
+    state$dependOn(.msabBfDeps)
+    jaspResults[["modelFits"]] <- state
   }
+  fits <- state[["object"]]
+  if (is.null(fits))
+    fits <- list()
 
-  # note: I could also pass a list with distribution names and fitting functions here
-  distType <- options$distType
+  missing <- setdiff(needed, names(fits))
+  if (length(missing) == 0)
+    return(fits)
 
-  if(options$setSeed) {
-    set.seed(options$seed)
-  }
-  fit <- try(
-    switch(distType,
-           "metalog" =
-             if(options$posteriorPlotType == "var" || options$posteriorPlotType == "percTol" ||
-                options$processVariationReference == "historicalSd") {
-               .fitMetaLog(samplesMat, bounds = 0, boundedness = "sl",
-                           term_lower_bound = 5, term_limit = 5) # 5 terms
-             } else {
-               .fitMetaLog(samplesMat, bounds = c(0, 100), boundedness = "b",
-                           term_lower_bound = 5, term_limit = 5) # 5 terms
-             },
-           "gig" = .fitGIG(samplesMat))
-  )
+  measurement <- vars[["measurementLong"]]
+  parts       <- vars[["parts"]]
+  operators   <- vars[["operators"]]
 
-  distFit[["object"]] <- fit
-
-  return()
-}
-
-## MetaLog
-.fitMetaLog <- function(samplesMat, ...) {
-  # fit metalog to each parameter
-  metaLogList <- apply(samplesMat, 2,
-                       function(x) rmetalog::metalog(x, ...))
-  return(metaLogList)
-}
-
-## Generalized Inverse Gaussian
-.fitGIG <- function(samplesMat) {
-  gigFitList <- apply(samplesMat, 2,
-                      function(x) GeneralizedHyperbolic::gigFit(x))
-
-  # add random samples
-  gigFitList <- lapply(gigFitList,
-                       function(x) {
-                         x$randData <- GeneralizedHyperbolic::rgig(1e5, param = x$param)
-                         return(x)
-                       })
-  return(gigFitList)
-}
-
-
-#### posterior summary
-.fillPostSummaryTable <- function(jaspResults, options, parts, operators, ready) {
-  if(is.null(jaspResults[["postSummaryStats"]]) && (options$posteriorCi || options$posteriorPointEstimate) && ready){
-    postSummaryStats <- createJaspState()
-    postSummaryStats$dependOn(c(.varCompTableDependencies(),
-                                .postPlotDependencies()))
-    jaspResults[["postSummaryStats"]] <- postSummaryStats
-  } else {
-    return()
-  }
-
-  fits <- jaspResults[["distFit"]][["object"]]
-
-  if(isTryError(fits)) {
-    jaspResults[["postSummaryStats"]][["object"]] <- fits
-    return()
-  }
-
-  if(options$posteriorPlotType == "var") {
-    parameter <- .convertOutputNames(names(fits), parts, operators)
-  } else {
-    parameter <- names(fits)
-  }
-
-  # point estimates
-  if(options$posteriorPointEstimate) {
-    # list with functions for different distributions
-    pointEstimateFunctions <- .pointEstimateFunctions()
-
-    # select the right function
-    pointFun <- pointEstimateFunctions[[options$distType]][[options$posteriorPointEstimateType]]
-
-    pointEstimate <- switch(options$posteriorPointEstimateType,
-                            "mean" = unlist(lapply(fits, pointFun)),
-                            "median" = unlist(lapply(fits, pointFun)),
-                            "mode" = unlist(lapply(fits, pointFun)))
-  }
-
-  # intervals
-  if(options$posteriorCi) {
-    # list with functions for different distributions
-    intervalFunctions <- .intervalFunctions()
-
-    # select the right function
-    interFun <- intervalFunctions[[options$distType]][[options$posteriorCiType]]
-
-    if(options$setSeed) {
-      set.seed(options$seed)
-    }
-
-    intervals <- switch(options$posteriorCiType,
-                        "central" = Map(interFun, fits, mass = options$posteriorCiMass),
-                        "HPD" = Map(interFun, fits, mass = options$posteriorCiMass),
-                        "custom" = Map(interFun, fits,
-                                       lower = options$posteriorCiLower,
-                                       upper = options$posteriorCiUpper,
-                                       cutoff = options$posteriorCiCutOff,
-                                       options = rep(list(options), length(fits)))
-                        )
-
-    if(options$posteriorCiType != "custom" || (options$posteriorCiType == "custom" && options$customCiType != "customCiCutOff")) {
-      # lower and upper bounds separately
-      lower <- sapply(intervals, function(x) x[1])
-      upper <- sapply(intervals, function(x) x[2])
-    }
-  }
-
-  if(options$posteriorPointEstimate && options$posteriorCi == FALSE) {
-    df <- data.frame(parameter,
-                     pointEstimate)
-  } else if(options$posteriorPointEstimate == FALSE && options$posteriorCi) {
-    if(options$posteriorCiType != "custom" || (options$posteriorCiType == "custom" && options$customCiType != "customCiCutOff")) {
-      df <- data.frame(parameter,
-                       ciLower = lower,
-                       ciUpper = upper)
+  for (m in missing) {
+    if (options[["type3"]]) {
+      formula     <- as.formula(paste(measurement, "~", parts))
+      whichRandom <- parts
     } else {
-      df <- data.frame(parameter,
-                       belowCutOff = unlist(intervals))
-    }
-  } else {
-    if(options$posteriorCiType != "custom" || (options$posteriorCiType == "custom" && options$customCiType != "customCiCutOff")) {
-      df <- data.frame(parameter,
-                       pointEstimate,
-                       ciLower = lower,
-                       ciUpper = upper)
-    } else {
-      df <- data.frame(parameter,
-                       pointEstimate,
-                       belowCutOff = unlist(intervals))
-    }
-  }
-  postSummaryStats[["object"]] <- df
-
-  return()
-}
-
-### functions point estimates
-.pointEstimateFunctions <- function() {
-  l <- list(
-    metalog = list(
-      mean = .meanMetaLog,
-      median = .medianMetaLog,
-      mode = .modeMetaLog
-    ),
-    gig = list(
-      mean = .meanGIG,
-      median = .medianGIG,
-      mode = .modeGIG
-    )
-  )
-  return(l)
-}
-
-## MetaLog
-.meanMetaLog <- function(fit) {
-  m <- integrate(rmetalog::qmetalog, m = fit, term = fit$params$term_limit,
-                 lower = 0, upper = 1)$value
-}
-
-.medianMetaLog <- function(fit) {
-  m <- rmetalog::qmetalog(m = fit, y = 0.5, term = fit$params$term_limit)
-}
-
-.modeMetaLog <- function(fit) {
-  m <- optimize(rmetalog::dmetalog, interval = c(0, max(fit$dataValues[1])),
-                m = fit, term = fit$params$term_limit, maximum = TRUE)$maximum
-}
-
-## Generalized Inverse Gaussian
-.meanGIG <- function(fit) {
-  m <- GeneralizedHyperbolic::gigMean(param = fit$param)
-}
-
-.medianGIG <- function(fit) {
-  m <- quantile(fit$randData, probs = 0.5)
-}
-
-.modeGIG <- function(fit) {
-  m <- GeneralizedHyperbolic::gigMode(param = fit$param)
-}
-
-### functions interval estimates
-.intervalFunctions <- function() {
-  l <- list(
-    metalog = list(
-      central = .centralInterMetaLog,
-      HPD = .hdiMetaLog,
-      custom = .customInterMetaLog
-    ),
-    gig = list(
-      central = .centralInterGIG,
-      HPD = .hdiGIG,
-      custom = .customInterGIG
-    )
-  )
-}
-
-## MetaLog
-.centralInterMetaLog <- function(fit, mass) {
-  lower <- (1 - mass) / 2
-  upper <- 1 - lower
-  int <- rmetalog::qmetalog(m = fit, y = c(lower, upper), term = fit$params$term_limit)
-}
-
-.hdiMetaLog <- function(fit, mass) {
-  samples <- rmetalog::rmetalog(m = fit, n = 1e5, term = fit$params$term_limit)
-  int <- HDInterval::hdi(samples, credMass = mass)
-}
-
-.customInterMetaLog <- function(fit, lower, upper, cutoff, options) {
-  if(options$customCiType == "customCiQuantiles") {
-    int <- rmetalog::qmetalog(m = fit, y = c(lower, upper), term = fit$params$term_limit)
-    return(int)
-  } else {
-    res <- try(rmetalog::pmetalog(m = fit, q = cutoff, term = fit$params$term_limit),
-               silent = TRUE)
-
-    if(isTryError(res))
-      return(NA)
-
-    return(res)
-  }
-}
-
-## Generalized inverse Gaussian
-.centralInterGIG <- function(fit, mass) {
-  lower <- (1 - mass) / 2
-  upper <- 1 - lower
-  int <- quantile(fit$randData, probs = c(lower, upper))
-}
-
-.hdiGIG <- function(fit, mass) {
-  int <- HDInterval::hdi(fit$randData, credMass = mass)
-}
-
-.customInterGIG <- function(fit, lower, upper, cutoff, options) {
-  if(options$customCiType == "customCiQuantiles") {
-    int <- quantile(fit$randData, probs = c(lower, upper))
-    return(int)
-  } else {
-    res <- tryCatch(
-      {
-        GeneralizedHyperbolic::pgig(q = cutoff, param = fit$param)
-      },
-      warning = function(w) {
-        return(NA)
-      },
-      error = function(e) {
-        return(NA)
-      }
-    )
-
-    return(res)
-  }
-}
-
-## axis limits
-.axisLimFuns <- function() {
-  l <- list(
-    metalog = .axisLimsMetaLog,
-    gig = .axisLimsGIG
-  )
-  return(l)
-}
-
-# Metalog
-.axisLimsMetaLog <- function(fit, postSummary, options, iter, histDens = 0) {
-
-  dfTemp <- fit$dataValues
-  m <- .modeMetaLog(fit)
-
-  if(options$posteriorCi) {
-    xUpper <- max(dfTemp[dfTemp$probs >= 0.99, ]$x_new[1], postSummary[iter, "ciUpper"])
-  } else {
-    xUpper <- dfTemp[dfTemp$probs >= 0.99, ]$x_new[1]
-  }
-
-  if(options$posteriorPlotType != "var" && options$posteriorPlotType != "percTol" &&
-     options$processVariationReference != "historicalSd") {
-    xUpper <- 100
-  }
-
-  xLower <- 0
-  xLims <- c(xLower, xUpper)
-  xBreaks <- jaspGraphs::getPrettyAxisBreaks(xLims)
-  xLims <- c(xBreaks[1], xBreaks[length(xBreaks)])
-
-  yUpper <- max(rmetalog::dmetalog(m = fit, q = m, term = fit$params$term_limit),
-                histDens)
-  yLower <- 0
-  yLims <- c(yLower, yUpper)
-  yBreaks <- jaspGraphs::getPrettyAxisBreaks(yLims)
-  yLims <- c(yBreaks[1], yBreaks[length(yBreaks)])
-
-  l <- list(
-    x = list(limits = xLims,
-             breaks = xBreaks),
-    y = list(limits = yLims,
-             breaks = yBreaks)
-  )
-  return(l)
-}
-
-# Generalized inverse Gaussian
-.axisLimsGIG <- function(fit, postSummary, options, iter, histDens = 0) {
-
-  quant <- quantile(fit$randData, 0.99) # for upper xLim
-  m <- .modeGIG(fit)
-
-  if(options$posteriorCi) {
-    xUpper <- max(quant, postSummary[iter, "ciUpper"])
-  } else {
-    xUpper <- quant
-  }
-
-  if(options$posteriorPlotType != "var" && options$posteriorPlotType != "percTol") {
-    xUpper <- 100
-  }
-
-  xLower <- 0
-  xLims <- c(xLower, xUpper)
-  xBreaks <- jaspGraphs::getPrettyAxisBreaks(xLims)
-  xLims <- c(xBreaks[1], xBreaks[length(xBreaks)])
-
-  yUpper <- max(GeneralizedHyperbolic::dgig(x = m, param = fit$param),
-                histDens)
-  yLower <- 0
-  yLims <- c(yLower, yUpper)
-  yBreaks <- jaspGraphs::getPrettyAxisBreaks(yLims)
-  yLims <- c(yBreaks[1], yBreaks[length(yBreaks)])
-
-  l <- list(
-    x = list(limits = xLims,
-             breaks = xBreaks),
-    y = list(limits = yLims,
-             breaks = yBreaks)
-  )
-  return(l)
-}
-
-### MCMC diagnostics
-
-## main function
-.mcmcDiagnostics <- function(jaspResults, parts, operators, options, ready) {
-  if(!is.null(jaspResults[["mcmcDiagnostics"]])) {
-    return()
-  }
-  mcmcDiagnostics <- createJaspContainer(title = gettext("MCMC diagnostics"))
-  mcmcDiagnostics$position <- 6
-  mcmcDiagnostics$dependOn(c(.mcmcDependencies(),
-                             "diagnosticsPlots", "diagnosticsPlotType",
-                             "diagnosticsTable"))
-  jaspResults[["mcmcDiagnostics"]] <- mcmcDiagnostics
-
-  # initialize plot if data is not ready
-  if(options$diagnosticsPlots && !ready) {
-    jaspResults[["mcmcDiagnostics"]][["plot"]] <- createJaspPlot(width = 600, height = 320)
-  }
-
-  if(options$diagnosticsTable) {
-    diagnosticsTable <- createJaspTable()
-    diagnosticsTable$position <- 1
-    mcmcDiagnostics[["table"]] <- diagnosticsTable
-
-    diagnosticsTable$addColumnInfo(name = "parameter",         title = gettext("Parameter"),   type = "string")
-    diagnosticsTable$addColumnInfo(name = "essBulk",           title = gettext("ESS (Bulk)"),  type = "number")
-    diagnosticsTable$addColumnInfo(name = "essTail",           title = gettext("ESS (Tail)"),  type = "number")
-    diagnosticsTable$addColumnInfo(name = "rhat",              title = gettext("Rhat"),        type = "number")
-    diagnosticsTable$addColumnInfo(name = "mcseMean",          title = gettext("MCSE (Mean)"), type = "number")
-    diagnosticsTable$addColumnInfo(name = "mcseQuantileLower", title = gettext("0.025"),       type = "number", overtitle = gettext("MCSE (Quantiles)"))
-    diagnosticsTable$addColumnInfo(name = "mcseQuantileUpper", title = gettext("0.975"),       type = "number", overtitle = gettext("MCSE (Quantiles)"))
-
-    if(!ready) {
-      return()
+      rhs         <- if (m == "full") paste0(parts, " + ", operators, " + ", parts, ":", operators) else paste(parts, "+", operators)
+      formula     <- as.formula(paste(measurement, "~", rhs))
+      whichRandom <- c(parts, operators)
     }
 
-    # general input needed for the sub-functions
-    chains <- jaspResults[["MCMCsamples"]][["object"]]
-    excludeInter <- .evalInter(jaspResults, parts, operators, options)
+    # seed per model so the result does not depend on the order in which the models are fit
+    if (options[["setSeed"]])
+      set.seed(options[["seed"]])
 
-    paramNames <- .bfParameterNames(parts, operators, excludeInter, options)
-    paramNames <- c(paramNames, "sig2")
-
-    fillDat <- .fillDiagnosticsTable(chains = posterior::as_draws_array(chains),
-                                     paramNames = .convertOutputNames(paramNames, parts, operators, includeSigma = TRUE))
-
-    if(.hasExtremeValues(fillDat)$large) {
-      diagnosticsTable$addFootnote(gettext("Estimates are very large potentially making results unreliable. Consider transfroming the data."),
-                                   symbol = gettext("<b>Warning:</b>"))
-    }
-
-    if(.hasExtremeValues(fillDat)$small) {
-      diagnosticsTable$addFootnote(gettext("Estimates are very small potentially making results unreliable. Consider transfroming the data."),
-                                   symbol = gettext("<b>Warning:</b>"))
-    }
-
-    if(any(is.na(fillDat))) {
-      diagnosticsTable$addFootnote(gettext("Some diagnostics could not be calculated. Results might be unreliable."),
-                                   symbol = gettext("<b>Warning:</b>"))
-    }
-
-    diagnosticsTable$setData(fillDat)
+    fits[[m]] <- try(BayesFactor::lmBF(formula, data = dataLong, whichRandom = whichRandom,
+                                       rscaleRandom = options[["rscalePrior"]], progress = FALSE))
   }
 
-  if(options$diagnosticsPlots) {
-    switch(options$diagnosticsPlotType,
-           "trace" = .tracePlot(jaspResults, chains = posterior::as_draws_array(chains), paramNames,
-                                xLabs = .convertOutputNames(paramNames, parts, operators, includeSigma = FALSE)),
-           "autocor" = .autocorPlot(jaspResults, chains = chains, paramNames,
-                                    titles = .convertOutputNames(paramNames, parts, operators, includeSigma = FALSE)),
-           "density" = .densityDiagnosticsPlot(jaspResults, chains = posterior::as_draws_array(chains), paramNames,
-                                               xLabs = .convertOutputNames(paramNames, parts, operators, includeSigma = FALSE)))
+  state[["object"]] <- fits
+  return(fits)
+}
+
+# Bayes factor (and its proportional error) of the full model over the main effects model
+.msabBfFullVsMain <- function(fits) {
+  full <- BayesFactor::extractBF(fits[["full"]], logbf = TRUE)
+  main <- BayesFactor::extractBF(fits[["main"]], logbf = TRUE)
+  list(bf = exp(full[["bf"]] - main[["bf"]]), error = sqrt(full[["error"]]^2 + main[["error"]]^2))
+}
+
+.msabSelectModel <- function(fits, options) {
+  if (options[["type3"]] || options[["estimationType"]] == "manual") {
+    model <- if (!options[["type3"]] && options[["modelType"]] == "mainEffectsOnly") "main" else "full"
+    if (isTryError(fits[[model]]))
+      .quitAnalysis(gettextf("The BayesFactor model could not be fit: %s", .rmNewLine(fits[[model]])))
+    return(model)
   }
 
-  return()
+  failed <- Filter(isTryError, fits)
+  if (length(failed) > 0)
+    .quitAnalysis(gettextf("Model comparison Bayes factors could not be computed: %s<br>Select manual estimation to try running the rest of the analysis.",
+                           .rmNewLine(failed[[1]])))
+
+  if (.msabBfFullVsMain(fits)[["bf"]] <= options[["bfFavorFull"]]) "main" else "full"
 }
 
-# function MCMC diagnostics table
-.fillDiagnosticsTable <- function(chains, paramNames) {
-  # note: posterior::ess_bulk(posteriorChains[,, "sig2"]) # this gives a different result compared to using apply??
-  essBulk <- apply(chains, 3, posterior::ess_bulk)
-  essTail <- apply(chains, 3, posterior::ess_tail)
-  rhat <- apply(chains, 3, posterior::rhat)
-  mcseMean <- apply(chains, 3, posterior::mcse_mean)
-  mcseQuantileLower <- apply(chains, 3, posterior::mcse_quantile, probs = c(0.025, 0.975))[1, ] # 0.025
-  mcseQuantileUpper <- apply(chains, 3, posterior::mcse_quantile, probs = c(0.025, 0.975))[2, ] # 0.975
+.msabRunMCMC <- function(jaspResults, fit, options, vars) {
+  if (!is.null(jaspResults[["MCMCsamples"]]))
+    return(jaspResults[["MCMCsamples"]][["object"]])
 
-  return(data.frame(parameter = paramNames,
-                    essBulk,
-                    essTail,
-                    rhat,
-                    mcseMean,
-                    mcseQuantileLower,
-                    mcseQuantileUpper
-  ))
-}
+  # BayesFactor parameter names and the internal ids used in the rest of the analysis
+  gNames <- c(part        = paste0("g_", vars[["parts"]]),
+              operator    = paste0("g_", vars[["operators"]]),
+              interaction = paste0("g_", vars[["parts"]], ":", vars[["operators"]]))
 
-# plotting functions for diagnostics
-.tracePlot <- function(jaspResults, chains, paramNames, xLabs) {
-  colors <- rep_len(rstan:::rstanvis_aes_ops("chain_colors"), dim(chains)[2])
+  nChains <- options[["mcmcChains"]]
+  burnin  <- options[["mcmcBurnin"]]
+  iter    <- options[["mcmcIterations"]]
 
-  for(i in seq_along(paramNames)) {
-    tempPlot <- createJaspPlot(width = 600, height = 320)
+  if (options[["setSeed"]])
+    set.seed(options[["seed"]])
 
-    # obtain y lims
-    dat <- chains[, , paramNames[i]]
-    yBreaks <- jaspGraphs::getPrettyAxisBreaks(c(min(dat), max(dat)))
-    yLims <- c(yBreaks[1], yBreaks[length(yBreaks)])
+  chains <- vector("list", nChains)
+  for (i in seq_len(nChains)) {
+    chain <- try(as.matrix(BayesFactor::posterior(fit, iterations = iter, progress = FALSE)))
+    if (isTryError(chain))
+      .quitAnalysis(gettextf("The MCMC sampler failed: %s", .rmNewLine(chain)))
 
-    p <- bayesplot::mcmc_trace(chains, pars = paramNames[i]) +
-      ggplot2::scale_color_manual(values = colors) +
-      jaspGraphs::themeJaspRaw() +
-      jaspGraphs::geom_rangeframe() +
-      ggplot2::scale_y_continuous(bquote(sigma[.(xLabs[i])]^2),
-                                  breaks = yBreaks,
-                                  limits = yLims)
+    gNamesModel <- gNames[gNames %in% colnames(chain)]
+    chain       <- chain[-seq_len(burnin), c(gNamesModel, "sig2"), drop = FALSE]
 
-    tempPlot$plotObject <- p
-    jaspResults[["mcmcDiagnostics"]][[paramNames[i]]] <- tempPlot
+    # revert standardization: sigma^2_effect = g_effect * sigma^2_error
+    chain[, gNamesModel] <- chain[, gNamesModel] * chain[, "sig2"]
+    colnames(chain)      <- c(names(gNamesModel), "error")
+    chains[[i]]          <- chain
   }
-  return()
+
+  mcmcArray <- array(unlist(chains), dim = c(iter - burnin, ncol(chains[[1]]), nChains),
+                     dimnames = list(NULL, colnames(chains[[1]]), NULL))
+  mcmcArray <- aperm(mcmcArray, c(1, 3, 2)) # iterations x chains x parameters
+
+  state <- createJaspState()
+  state$dependOn(.msabModelDeps)
+  state[["object"]] <- mcmcArray
+  jaspResults[["MCMCsamples"]] <- state
+
+  return(mcmcArray)
 }
-
-.autocorPlot <- function(jaspResults, chains, paramNames, titles) {
-  colors <- rep_len(rstan:::rstanvis_aes_ops("chain_colors"), dim(chains)[2])
-
-  for(i in seq_along(paramNames)) {
-    tempPlot <- createJaspPlot(width = 500, height = 320)
-
-    # obtain data for plotting
-    dat <- chains[, , paramNames[i]]
-    l <- apply(dat, 2, acf, lag.max = 20, plot = FALSE)
-    l <- lapply(l, function(x) list(acf = x$acf, lag = x$lag))
-    df <- do.call(rbind.data.frame, l)
-    df$chain <- factor(rep(1:dim(dat)[2], each = length(l[[1]]$lag)))
-
-    p <- ggplot2::ggplot(df, ggplot2::aes(x = lag, y = acf, color = chain)) +
-      ggplot2::geom_line() +
-      ggplot2::geom_hline(yintercept = 0, alpha = 0.5) +
-      ggplot2::scale_color_manual(values = colors) +
-      jaspGraphs::themeJaspRaw() +
-      jaspGraphs::geom_rangeframe() +
-      ggplot2::labs(x = "Lag", y = "Autocorrelation") +
-      ggplot2::labs(title = bquote(sigma[.(titles[i])]^2))
-
-    tempPlot$plotObject <- p
-    jaspResults[["mcmcDiagnostics"]][[paramNames[i]]] <- tempPlot
-  }
-  return()
-}
-
-.densityDiagnosticsPlot <- function(jaspResults, chains, paramNames, xLabs) {
-  colors <- rep_len(rstan:::rstanvis_aes_ops("chain_colors"), dim(chains)[2])
-
-  for(i in seq_along(paramNames)) {
-    tempPlot <- createJaspPlot(width = 600, height = 320)
-
-    # initilize plot
-    p <- bayesplot::mcmc_dens_overlay(chains, pars = paramNames[i])
-
-    d <- density(chains[, , paramNames[i]], n = 64000)
-
-    # x-lims
-    m <- quantile(chains[, , paramNames[i]], 0.5)
-    xUpper <- d$x[d$y < 1e-3 & d$x > m][1]
-    xLower <- quantile(chains[, , paramNames[i]], 0.001)
-    xLower <- ifelse(xLower < 1, 0, xLower)
-    xLims <- c(xLower, xUpper)
-
-    manualScaleX <- FALSE
-    if(!anyNA(xLims)) {
-      manualScaleX <- TRUE
-      axisBreaksX <- jaspGraphs::getPrettyAxisBreaks(xLims)
-      xLims <- c(axisBreaksX[1], axisBreaksX[length(axisBreaksX)])
-    }
-
-    # y-lims
-    yValues <- d$y
-    padding <- 0.05 * diff(range(yValues))
-    yLims <- c(0, max(yValues) + padding)
-    axisBreaksY <- jaspGraphs::getPrettyAxisBreaks(yLims)
-    yLims <- c(axisBreaksY[1], axisBreaksY[length(axisBreaksY)])
-
-    # aesthetics
-    p <- p +
-      ggplot2::scale_color_manual(values = colors) +
-      ggplot2::xlab(bquote(sigma[.(xLabs[i])]^2)) +
-      ggplot2::xlim(xLims)
-
-    if(manualScaleX) {
-      p <- p + ggplot2::scale_x_continuous(limits = xLims,
-                                           breaks = axisBreaksX)
-    }
-
-    p <- p + jaspGraphs::themeJaspRaw() +
-      jaspGraphs::geom_rangeframe() +
-      ggplot2::scale_y_continuous("Density", limits = yLims,
-                                  breaks = axisBreaksY) +
-      ggplot2::theme(axis.ticks.y = ggplot2::element_line())
-
-    tempPlot$plotObject <- p
-    jaspResults[["mcmcDiagnostics"]][[paramNames[i]]] <- tempPlot
-  }
-  return()
-}
-
 
 .arrayToMat <- function(array) {
   mat <- matrix(array, nrow = prod(dim(array)[1:2]), ncol = dim(array)[3])
@@ -2299,325 +357,1175 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options, ...) {
   return(mat)
 }
 
+# variance components per posterior draw
+.msabComponentDraws <- function(samples, options) {
+  mat <- .arrayToMat(samples)
 
-### Report
-.reportDependencies <- function() {
-  return(c("report", "reportMetaData", "reportTitle",
-           "reportTitleText", "reportPartName", "reportPartNameText", "reportGaugeName",
-           "reportGaugeNameText", "reportCharacteristic", "reportCharacteristicText",
-           "reportGaugeNumber", "reportGaugeNumberText", "reportTolerance", "reportToleranceText",
-           "reportLocation", "reportLocationText", "reportPerformedBy", "reportPerformedByText",
-           "reportDate", "reportDateText", "reportVariationComponents", "reportMeasurementsByPartPlot",
-           "reportRChartByOperator", "reportMeasurementsByOperatorPlot", "reportAverageChartByOperator",
-           "reportPartByOperatorPlot", "reportTrafficLightChart", "reportMetaData"))
-}
+  repeatability <- mat[, "error"]
+  part          <- mat[, "part"]
 
-.getReportTitle <- function(options) {
-  if (options[["reportTitle"]] ) {
-    title <- if (options[["reportTitleText"]] == "") gettext("Gauge r&R report") else options[["reportTitleText"]]
+  if (options[["type3"]]) {
+    gauge <- repeatability
+    draws <- data.frame(gauge, repeatability)
   } else {
-    title <- ""
+    operator        <- mat[, "operator"]
+    reproducibility <- if ("interaction" %in% colnames(mat)) operator + mat[, "interaction"] else operator
+    gauge           <- repeatability + reproducibility
+    draws           <- data.frame(gauge, repeatability, reproducibility, operator)
   }
-  return(title)
-}
 
-.getReportMetaData <- function(options) {
-  if (options[["reportMetaData"]]) {
-    text <- c()
-    text <- if (options[["reportPartName"]]) c(text, gettextf("Part name: %s", options[["reportPartNameText"]])) else text
-    text <- if (options[["reportGaugeName"]]) c(text, gettextf("Gauge name: %s", options[["reportGaugeNameText"]])) else text
-    text <- if (options[["reportCharacteristic"]]) c(text, gettextf("Characteristic: %s", options[["reportCharacteristicText"]])) else text
-    text <- if (options[["reportGaugeNumber"]]) c(text, gettextf("Gauge number: %s", options[["reportGaugeNumberText"]])) else text
-    text <- if (options[["reportTolerance"]]) c(text, gettextf("Tolerance: %s", options[["reportToleranceText"]])) else text
-    text <- if (options[["reportLocation"]]) c(text, gettextf("Location: %s", options[["reportLocationText"]])) else text
-    text <- if (options[["reportPerformedBy"]]) c(text, gettextf("Performed by: %s", options[["reportPerformedByText"]])) else text
-    text <- if (options[["reportDate"]]) c(text, gettextf("Date: %s", options[["reportDateText"]])) else text
+  truncated <- 0
+  if (options[["processVariationReference"]] == "historicalSd") {
+    # the total variation is fixed at the historical variance; the part variation is what remains per draw
+    historicalVar <- options[["historicalSdValue"]]^2
+    if (historicalVar < mean(gauge))
+      .quitAnalysis(gettextf("The historical standard deviation (%1$s) is smaller than the estimated gauge r&R standard deviation (%2$s), so the part-to-part variation cannot be derived. Enter a larger historical standard deviation or base the process variation on the study variation.",
+                             options[["historicalSdValue"]], signif(sqrt(mean(gauge)), 3)))
+
+    part      <- historicalVar - gauge
+    truncated <- mean(part < 0)
+    part      <- pmax(part, 0)
+    total     <- rep(historicalVar, length(gauge))
   } else {
-    text <- NULL
+    total <- gauge + part
   }
 
-  return(text)
+  draws[["part"]]  <- part
+  draws[["total"]] <- total
+
+  attr(draws, "truncated") <- truncated
+  return(draws)
 }
 
-.getReportPlots <- function(jaspResults, dataset, measurements, parts, operators, options) {
+.msabStudyVarMultiplier <- function(options) {
+  if (options[["studyVarianceMultiplierType"]] == "sd")
+    return(options[["studyVarianceMultiplierValue"]])
 
-  plots <- list()
-  plotIndexCounter <- 1
-  if (options[["reportVariationComponents"]]) {
-    plots[[plotIndexCounter]] <- .createVarCompPlot(jaspResults, options, plotOnly = TRUE)
-    plotIndexCounter <- plotIndexCounter + 1
-  }
-  if (options[["reportMeasurementsByPartPlot"]]) {
-    plots[[plotIndexCounter]] <- .gaugeByPartGraphPlotObject(dataset, measurements, parts, operators, displayAll = FALSE) #measurement by part plot
-    plotIndexCounter <- plotIndexCounter + 1
-  }
-  if (options[["reportRChartByOperator"]]) {
-    ruleList1 <- .getRuleListSubgroupCharts(options, "R")
-    plots[[plotIndexCounter]] <- .controlChart(dataset = dataset[c(measurements, operators)],
-                                               plotType = "R", ruleList = ruleList1, stages = operators,
-                                               xAxisLabels = dataset[[parts]][order(dataset[[operators]])],
-                                               stagesSeparateCalculation = FALSE)$plotObject
-    plotIndexCounter <- plotIndexCounter + 1
-  }
-  if (options[["reportMeasurementsByOperatorPlot"]]) {
-    plots[[plotIndexCounter]] <- .gaugeByOperatorGraphPlotObject(dataset, measurements, parts, operators, options, Type3 = options$type3)   #Measurements by operator plot
-    plotIndexCounter <- plotIndexCounter + 1
-  }
-  if (options[["reportAverageChartByOperator"]]) {
-    ruleList2 <- .getRuleListSubgroupCharts(options, "xBar")
-    plots[[plotIndexCounter]] <- .controlChart(dataset = dataset[c(measurements, operators)],
-                                               plotType = "xBar", ruleList = ruleList2, xBarSdType = "r", stages = operators,
-                                               xAxisLabels = dataset[[parts]][order(dataset[[operators]])],
-                                               stagesSeparateCalculation = FALSE)$plotObject
-    plotIndexCounter <- plotIndexCounter + 1
-  }
-  if (options[["reportPartByOperatorPlot"]]) {
-    plots[[plotIndexCounter]] <- .gaugeByInteractionGraphPlotFunction(dataset, measurements, parts, operators, options,
-                                                                      Type3 = options$type3, ggPlot = TRUE) # Part x Operator interaction plot
-    plotIndexCounter <- plotIndexCounter + 1
-  }
-
-  if (options[["reportTrafficLightChart"]]) {
-    trafficPlots <- .createTrafficLightPlot(jaspResults, options, plotOnly = TRUE)
-    if (options[["tolerance"]]) {
-      plots[[plotIndexCounter]] <- trafficPlots$p1
-      plotIndexCounter <- plotIndexCounter + 1
-      plots[[plotIndexCounter]] <- trafficPlots$p2
-    } else {
-      plots[[plotIndexCounter]] <- trafficPlots$plotObject
-    }
-  }
-
-  return(plots)
+  abs(2 * qnorm((1 - options[["studyVarianceMultiplierValue"]] / 100) / 2))
 }
 
-.getReportTable <- function(jaspResults, parts, operators, options) {
-  dfs <- list()
-  tables <- c("sd", "studyVar", "percStudyVar")
-  colNames <- c("Source", "Std. dev.", "Study variation", "%Study variation")
-  if(options$tolerance) {
-    tables <- c(tables, "percTol")
-    colNames <- c(colNames, "%Tolerance")
-  }
-
-  for(i in seq_along(tables)) {
-    dfs[[i]] <- .fillTablesGaugeEval(jaspResults, parts, operators, options, whichTable = tables[i],
-                                     gaugeReport = TRUE)
-  }
-
-  out <- lapply(dfs, .extractCiAndPaste)
-  out <- lapply(out, function(x) sub(" \\(NA, NA\\)", "", x)) # remove empty CrIs
-  out <- do.call(cbind.data.frame, out)
-  out <- cbind.data.frame(dfs[[1]]$sourceName, out)
-  colnames(out) <- colNames
-
-  # number of distinct categories
-  nDistinctDf <- data.frame("Number of distinct categories",
-                            .getDistinctCategories(jaspResults, parts, operators, options))
-  colnames(nDistinctDf) <- NULL
-
-  # split data frame as it would otherwise be cut off in the report
-  if(options$tolerance) {
-    tolOut <- out[, c("Source", "%Tolerance")]
-    out <- out[, colnames(out) != "%Tolerance"]
-    return(list(list(out, nDistinctDf), tolOut))
-  }
-
-  return(list(list(out, nDistinctDf)))
+# transform the variance draws into the quantity of interest
+.msabTransformDraws <- function(draws, options, type = c("var", "sd", "studyVar", "percContrib", "percStudyVar", "percTol")) {
+  type  <- match.arg(type)
+  draws <- as.matrix(draws)
+  switch(type,
+         "var"          = draws,
+         "sd"           = sqrt(draws),
+         "studyVar"     = sqrt(draws) * .msabStudyVarMultiplier(options),
+         "percContrib"  = draws / draws[, "total"] * 100,
+         "percStudyVar" = sqrt(draws) / sqrt(draws[, "total"]) * 100,
+         "percTol"      = sqrt(draws) * .msabStudyVarMultiplier(options) / options[["toleranceValue"]] * 100)
 }
 
-.extractCiAndPaste <- function(df) {
-  means <- as.numeric(df$means)
-  lower <- as.numeric(df$lower)
-  upper <- as.numeric(df$upper)
-  res <- paste0(round(means, 2), " (", round(lower, 2), ", ", round(upper, 2), ")")
+# posterior mean, sd and 95% CrI per column; constant columns (e.g. fixed total variation) get no spread
+.msabSummariseDraws <- function(draws) {
+  draws    <- as.matrix(draws)
+  constant <- apply(draws, 2, function(x) all(x == x[1]))
 
+  res <- data.frame(source     = colnames(draws),
+                    sourceName = .msabSourceLabels(colnames(draws)),
+                    mean       = colMeans(draws),
+                    sd         = apply(draws, 2, sd),
+                    lower      = apply(draws, 2, quantile, probs = 0.025, names = FALSE),
+                    upper      = apply(draws, 2, quantile, probs = 0.975, names = FALSE),
+                    row.names  = NULL)
+  res[constant, c("sd", "lower", "upper")] <- NA
   return(res)
 }
 
-.createGaugeReport <- function(jaspResults, dataset, measurements, parts, operators, options, ready) {
-  nElements <- sum(options[["reportVariationComponents"]], options[["reportMeasurementsByPartPlot"]], options[["reportRChartByOperator"]],
-                   options[["reportMeasurementsByOperatorPlot"]], options[["reportAverageChartByOperator"]],
-                   options[["reportPartByOperatorPlot"]], options[["reportTrafficLightChart"]], options[["reportMetaData"]])
-  plotHeight <- ceiling(nElements/2) * 500
-  reportPlot <- createJaspPlot(title = gettext("Gauge r&R report"), width = 1250, height = plotHeight)
+.msabSourceLabels <- function(ids) {
+  labels <- c(gauge           = gettext("Total gauge r&R"),
+              repeatability   = gettext("Repeatability"),
+              reproducibility = gettext("Reproducibility"),
+              operator        = gettext("Operator"),
+              part            = gettext("Part-to-part"),
+              total           = gettext("Total variation"))
+  unname(labels[ids])
+}
+
+.msabParameterLabels <- function(ids, html = FALSE) {
+  labels <- c(part        = gettext("Part"),
+              operator    = gettext("Operator"),
+              interaction = paste(gettext("Part"), "\u273B", gettext("Operator")),
+              error       = gettext("Error"))
+  labels <- unname(labels[ids])
+  if (html)
+    labels <- paste0("\u03C3<sup>2</sup><sub>", labels, "</sub>")
+  return(labels)
+}
+
+.msabDistinctCategories <- function(draws) {
+  nCat <- sqrt(draws[["part"]]) / sqrt(draws[["gauge"]]) * 1.41
+  c(mean  = mean(nCat),
+    lower = quantile(nCat, 0.025, names = FALSE),
+    upper = quantile(nCat, 0.975, names = FALSE))
+}
+
+.msabAddCommonFootnotes <- function(table, fillDat, draws) {
+  extreme <- .hasExtremeValues(fillDat)
+  if (extreme[["large"]])
+    table$addFootnote(gettext("Estimates are very large potentially making results unreliable. Consider transforming the data."),
+                      symbol = gettext("<b>Warning:</b>"))
+  if (extreme[["small"]])
+    table$addFootnote(gettext("Estimates are very small potentially making results unreliable. Consider transforming the data."),
+                      symbol = gettext("<b>Warning:</b>"))
+
+  truncated <- attr(draws, "truncated")
+  if (!is.null(truncated) && truncated > 0)
+    table$addFootnote(gettextf("In %s%% of the posterior samples the gauge r&R variance exceeded the historical variance; the part-to-part variance was set to zero in these samples.",
+                               signif(100 * truncated, 2)),
+                      symbol = gettext("<b>Warning:</b>"))
+}
+
+#### Tables ----
+.msabBfTable <- function(jaspResults, fits, options, vars, ready) {
+  if (!is.null(jaspResults[["BFtable"]]))
+    return()
+
+  table <- createJaspTable(title = gettext("Model Comparison"))
+  table$position <- 1
+  table$dependOn(c(.msabBfDeps, "estimationType", "bfFavorFull", "RRTable", "report"))
+  jaspResults[["BFtable"]] <- table
+
+  table$addColumnInfo(name = "modelName",    title = gettext("Models"),          type = "string")
+  table$addColumnInfo(name = "comparisonBF", title = gettext("BF<sub>10</sub>"), type = "number")
+  table$addColumnInfo(name = "error",        title = gettextf("error %%"),       type = "number")
+
+  if (!ready)
+    return()
+
+  failed <- Filter(isTryError, fits)
+  if (length(failed) > 0) {
+    table$setError(gettextf("Model comparison Bayes factors could not be computed: %s", .rmNewLine(failed[[1]])))
+    return()
+  }
+
+  parts     <- vars[["parts"]]
+  operators <- vars[["operators"]]
+  full      <- BayesFactor::extractBF(fits[["full"]])
+
+  if (options[["type3"]]) {
+    fillDat <- data.frame(modelName    = c(gettext("Null model"), parts),
+                          comparisonBF = c(full[["bf"]], 1),
+                          error        = c(full[["error"]], NA) * 100)
+  } else {
+    fullVsMain <- .msabBfFullVsMain(fits)
+    mainName   <- paste(parts, "+", operators)
+    fillDat    <- data.frame(modelName    = c(gettext("Null model"), mainName, paste(mainName, "+", jaspBase::gsubInteractionSymbol(paste0(parts, ":", operators)))),
+                             comparisonBF = c(full[["bf"]], fullVsMain[["bf"]], 1),
+                             error        = c(full[["error"]], fullVsMain[["error"]], NA) * 100)
+
+    if (options[["estimationType"]] == "automatic") {
+      bfText <- format(fullVsMain[["bf"]], digits = 3)
+      if (fullVsMain[["bf"]] <= options[["bfFavorFull"]]) {
+        table$addFootnote(gettextf("The model including only the main effects is used for estimation, because the BF<sub>10</sub> in favor of the full model (%1$s, error %2$s%%) does not exceed the cut-off of %3$s.",
+                                   bfText, signif(100 * fullVsMain[["error"]], 2), options[["bfFavorFull"]]))
+      } else {
+        table$addFootnote(gettextf("The full model is used for estimation, because the BF<sub>10</sub> in favor of the full model (%1$s, error %2$s%%) exceeds the cut-off of %3$s.",
+                                   bfText, signif(100 * fullVsMain[["error"]], 2), options[["bfFavorFull"]]))
+      }
+    }
+  }
+
+  table$setData(fillDat[order(-fillDat[["comparisonBF"]]), ])
+  table$addFootnote(gettext("BF<sub>10</sub> compares the full model to the indicated model in each row."))
+}
+
+.msabVarCompTable <- function(jaspResults, draws, model, options, ready) {
+  if (!is.null(jaspResults[["varCompTable"]]))
+    return()
+
+  table <- createJaspTable(title = gettext("Variance Components"))
+  table$position <- 2
+  table$dependOn(c(.msabComponentDeps, "RRTable", "report"))
+  jaspResults[["varCompTable"]] <- table
+
+  overtitle <- gettextf("95%% Credible Interval")
+  table$addColumnInfo(name = "sourceName", title = gettext("Source"),         type = "string")
+  table$addColumnInfo(name = "mean",       title = gettext("Mean"),           type = "number")
+  table$addColumnInfo(name = "sd",         title = gettext("Std. Deviation"), type = "number")
+  table$addColumnInfo(name = "lower",      title = gettext("Lower"),          type = "number", overtitle = overtitle)
+  table$addColumnInfo(name = "upper",      title = gettext("Upper"),          type = "number", overtitle = overtitle)
+
+  if (!ready)
+    return()
+
+  fillDat <- .msabSummariseDraws(draws)[, c("sourceName", "mean", "sd", "lower", "upper")]
+  .msabAddCommonFootnotes(table, fillDat[, -1], draws)
+  table$setData(fillDat)
+
+  table$addFootnote(gettext("Credible intervals are estimated based on the MCMC samples."))
+  if (model == "main") {
+    table$addFootnote(gettext("The components are based on the model only including the main effects."))
+  } else {
+    table$addFootnote(gettext("The components are based on the full model."))
+  }
+}
+
+.msabContribTable <- function(jaspResults, draws, options, ready) {
+  if (!is.null(jaspResults[["contribTable"]]))
+    return()
+
+  table <- createJaspTable(title = gettextf("%% Contribution to Total Variation"))
+  table$position <- 3
+  table$dependOn(c(.msabComponentDeps, "RRTable", "report"))
+  jaspResults[["contribTable"]] <- table
+
+  overtitle <- gettextf("95%% Credible Interval")
+  table$addColumnInfo(name = "sourceName", title = gettext("Source"), type = "string")
+  table$addColumnInfo(name = "mean",       title = gettext("Mean"),   type = "number")
+  table$addColumnInfo(name = "lower",      title = gettext("Lower"),  type = "number", overtitle = overtitle)
+  table$addColumnInfo(name = "upper",      title = gettext("Upper"),  type = "number", overtitle = overtitle)
+
+  if (!ready)
+    return()
+
+  fillDat <- .msabSummariseDraws(.msabTransformDraws(draws, options, "percContrib"))
+  table$setData(fillDat[, c("sourceName", "mean", "lower", "upper")])
+  table$addFootnote(gettext("Credible intervals are estimated based on the MCMC samples."))
+}
+
+.msabGaugeEvalTables <- function(jaspResults, draws, options, ready) {
+  if (!is.null(jaspResults[["gaugeEvaluation"]]))
+    return()
+
+  container <- createJaspContainer(title = gettext("Gauge Evaluation"))
+  container$position <- 4
+  container$dependOn(c(.msabComponentDeps, .msabStudyVarDeps, .msabToleranceDeps, "RRTable", "report"))
+  jaspResults[["gaugeEvaluation"]] <- container
+
+  ### Standard deviation & study variation table
+  stdTable <- createJaspTable(title = gettext("Standard Deviation & Study Variation"))
+  stdTable$position <- 1
+  container[["stdTable"]] <- stdTable
+
+  stdTable$addColumnInfo(name = "sourceName",    title = gettext("Source"),                  type = "string")
+  stdTable$addColumnInfo(name = "meansStd",      title = gettext("Mean<br>Std"),             type = "number")
+  stdTable$addColumnInfo(name = "lowerStd",      title = gettext("Lower"),                   type = "number", overtitle = gettextf("95%% Credible Interval<br>Std"))
+  stdTable$addColumnInfo(name = "upperStd",      title = gettext("Upper"),                   type = "number", overtitle = gettextf("95%% Credible Interval<br>Std"))
+  stdTable$addColumnInfo(name = "meansStudyVar", title = gettext("Mean<br>Study Variation"), type = "number")
+  stdTable$addColumnInfo(name = "lowerStudyVar", title = gettext("Lower"),                   type = "number", overtitle = gettextf("95%% Credible Interval<br>Study Variation"))
+  stdTable$addColumnInfo(name = "upperStudyVar", title = gettext("Upper"),                   type = "number", overtitle = gettextf("95%% Credible Interval<br>Study Variation"))
+
+  ### Percent study variation & percent tolerance table
+  title <- if (options[["tolerance"]]) gettextf("%% Study Variation & %% Tolerance") else gettextf("%% Study Variation")
+  percTable <- createJaspTable(title = title)
+  percTable$position <- 2
+  container[["percStudyVarTable"]] <- percTable
+
+  percTable$addColumnInfo(name = "sourceName",     title = gettext("Source"),                      type = "string")
+  percTable$addColumnInfo(name = "meansPercStudy", title = gettextf("Mean<br>%% Study Variation"), type = "number")
+  percTable$addColumnInfo(name = "lowerPercStudy", title = gettext("Lower"),                       type = "number", overtitle = gettextf("95%% Credible Interval<br>%% Study Variation"))
+  percTable$addColumnInfo(name = "upperPercStudy", title = gettext("Upper"),                       type = "number", overtitle = gettextf("95%% Credible Interval<br>%% Study Variation"))
+  if (options[["tolerance"]]) {
+    percTable$addColumnInfo(name = "meansPercTol", title = gettextf("Mean<br>%% Tolerance"), type = "number")
+    percTable$addColumnInfo(name = "lowerPercTol", title = gettext("Lower"),                 type = "number", overtitle = gettextf("95%% Credible Interval<br>%% Tolerance"))
+    percTable$addColumnInfo(name = "upperPercTol", title = gettext("Upper"),                 type = "number", overtitle = gettextf("95%% Credible Interval<br>%% Tolerance"))
+  }
+
+  if (!ready)
+    return()
+
+  stdDat <- cbind(.msabGaugeEvalColumns(draws, options, "sd"),
+                  .msabGaugeEvalColumns(draws, options, "studyVar")[, -1])
+  .msabAddCommonFootnotes(stdTable, stdDat[, -1], draws)
+  stdTable$setData(stdDat)
+  stdTable$addFootnote(gettext("Credible intervals are estimated based on the MCMC samples."))
+  stdTable$addFootnote(gettextf("Study variation is calculated as std. dev. <span>&#215;</span> %s", round(.msabStudyVarMultiplier(options), 2)))
+
+  nDistinct <- .msabDistinctCategories(draws)
+  stdTable$addFootnote(gettextf("Number of distinct categories: %1$s (95%% CrI: %2$s, %3$s). It is computed as 1.41 <span>&#215;</span> &sigma;<sub>Part</sub> / &sigma;<sub>Gauge</sub> per posterior sample and, unlike the AIAG convention, not truncated to an integer.",
+                                round(nDistinct[["mean"]], 2), round(nDistinct[["lower"]], 2), round(nDistinct[["upper"]], 2)))
+
+  percDat <- .msabGaugeEvalColumns(draws, options, "percStudyVar")
+  if (options[["tolerance"]])
+    percDat <- cbind(percDat, .msabGaugeEvalColumns(draws, options, "percTol")[, -1])
+  percTable$setData(percDat)
+  percTable$addFootnote(gettext("Credible intervals are estimated based on the MCMC samples."))
+}
+
+.msabGaugeEvalColumns <- function(draws, options, type = c("sd", "studyVar", "percStudyVar", "percTol")) {
+  type    <- match.arg(type)
+  summary <- .msabSummariseDraws(.msabTransformDraws(draws, options, type))
+  suffix  <- switch(type, "sd" = "Std", "studyVar" = "StudyVar", "percStudyVar" = "PercStudy", "percTol" = "PercTol")
+
+  res <- summary[, c("sourceName", "mean", "lower", "upper")]
+  colnames(res) <- c("sourceName", paste0(c("means", "lower", "upper"), suffix))
+  return(res)
+}
+
+#### Plots ----
+.msabPriorPlot <- function(jaspResults, options) {
+  if (!is.null(jaspResults[["priorPlot"]]))
+    return()
+
+  container <- createJaspContainer(title = gettext("Prior Distribution"))
+  container$position <- 5
+  container$dependOn(c("rscalePrior", "priorPlot", "report"))
+  jaspResults[["priorPlot"]] <- container
+
+  gPrior <- createJaspPlot(title = gettext("g-prior"), width = 600, height = 320)
+  container[["plot"]] <- gPrior
+
+  # g ~ Inv-chi^2(nu = 1, tau = r^2), i.e. InvGamma(1/2, r^2/2)
+  xUpper  <- extraDistr::qinvchisq(0.75, nu = 1, tau = options[["rscalePrior"]]^2)
+  xBreaks <- jaspGraphs::getPrettyAxisBreaks(c(0, xUpper))
+
+  p <- ggplot2::ggplot() +
+    ggplot2::stat_function(fun = extraDistr::dinvchisq,
+                           args = list(nu = 1, tau = options[["rscalePrior"]]^2),
+                           linewidth = 1) +
+    ggplot2::scale_y_continuous(gettext("Density")) +
+    ggplot2::scale_x_continuous("g", breaks = xBreaks, limits = c(0, xUpper)) +
+    jaspGraphs::themeJaspRaw() +
+    jaspGraphs::geom_rangeframe()
+
+  gPrior$plotObject <- p
+}
+
+.msabVarCompPlot <- function(jaspResults, draws, options, ready, plotOnly = FALSE) {
+  if (!plotOnly) {
+    if (!is.null(jaspResults[["varCompPlot"]]))
+      return()
+
+    varCompPlot <- createJaspPlot(title = gettext("Components of variation"), width = 850, height = 500)
+    varCompPlot$position <- 7
+    varCompPlot$dependOn(c(.msabComponentDeps, .msabStudyVarDeps, .msabToleranceDeps, "varianceComponentsGraph", "report"))
+    jaspResults[["varCompPlot"]] <- varCompPlot
+
+    if (!ready)
+      return()
+  }
+
+  # rows in the order expected by the plotting function
+  ids <- if (options[["type3"]]) c("gauge", "repeatability", "part") else c("gauge", "repeatability", "reproducibility", "part")
+  summaries <- lapply(c("percContrib", "percStudyVar", if (options[["tolerance"]]) "percTol"), function(type) {
+    s <- .msabSummariseDraws(.msabTransformDraws(draws, options, type))
+    s[match(ids, s[["source"]]), ]
+  })
+
+  errorbarDf <- do.call(rbind, lapply(summaries, function(s) s[, c("lower", "upper")]))
+
+  # the plotting function expects a reproducibility row also for type 3 studies
+  means <- lapply(summaries, function(s) if (options[["type3"]]) append(s[["mean"]], NA, after = 2) else s[["mean"]])
+
+  p <- .gaugeVarCompGraph(means[[1]], means[[2]], if (options[["tolerance"]]) means[[3]] else NA,
+                          errorbarDf = errorbarDf, Type3 = options[["type3"]])
+
+  if (plotOnly)
+    return(p)
+
+  varCompPlot$plotObject <- p
+}
+
+.msabTrafficLightPlot <- function(jaspResults, draws, options, ready, plotOnly = FALSE) {
+  if (!plotOnly) {
+    if (!is.null(jaspResults[["trafficPlot"]]))
+      return()
+
+    container <- createJaspContainer(title = gettext("Traffic light chart"))
+    container$position <- 15
+    container$dependOn(c(.msabComponentDeps, .msabStudyVarDeps, .msabToleranceDeps, "trafficLightChart", "report"))
+    jaspResults[["trafficPlot"]] <- container
+
+    if (!ready) {
+      container[["plot"]] <- createJaspPlot(width = 1000)
+      return()
+    }
+  }
+
+  gaugeSummary <- function(type) {
+    s <- .msabSummariseDraws(.msabTransformDraws(draws, options, type))
+    s[s[["source"]] == "gauge", ]
+  }
+
+  percStudyVar <- gaugeSummary("percStudyVar")
+  studyVarCi   <- data.frame(lower = percStudyVar[["lower"]], upper = percStudyVar[["upper"]])
+
+  if (!options[["tolerance"]]) {
+    p <- .trafficplot(StudyVar = percStudyVar[["mean"]], ToleranceUsed = FALSE, ToleranceVar = 0,
+                      options = options, ready = TRUE, StudyVarCi = studyVarCi, ggPlot = plotOnly)
+  } else {
+    percTol <- gaugeSummary("percTol")
+    p <- .trafficplot(StudyVar = percStudyVar[["mean"]], ToleranceUsed = TRUE, ToleranceVar = percTol[["mean"]],
+                      options = options, ready = TRUE, StudyVarCi = studyVarCi,
+                      TolCi = data.frame(lower = percTol[["lower"]], upper = percTol[["upper"]]),
+                      ggPlot = plotOnly)
+  }
+
+  if (plotOnly)
+    return(p)
+
+  container[["trafficPlot"]] <- p
+}
+
+.msabContourPlot <- function(jaspResults, data, draws, options, vars, ready) {
+  if (!is.null(jaspResults[["contourPlot"]]))
+    return()
+
+  container <- createJaspContainer(title = gettext("Contour Plot"))
+  container$position <- 16
+  container$dependOn(c(.msabComponentDeps, "contourPlot", "contourLSL", "contourUSL", "report"))
+  jaspResults[["contourPlot"]] <- container
+
+  risksTable <- createJaspTable(title = gettext("Producer's (\u03b4) and Consumer's (\u03b2) Risk"))
+  risksTable$position <- 1
+  container[["table"]] <- risksTable
+
+  risksTable$addColumnInfo(name = "risks", title = gettext("Risk"),  type = "string")
+  risksTable$addColumnInfo(name = "means", title = gettext("Mean"),  type = "number")
+  risksTable$addColumnInfo(name = "lower", title = gettext("Lower"), type = "number", overtitle = gettextf("95%% Credible Interval"))
+  risksTable$addColumnInfo(name = "upper", title = gettext("Upper"), type = "number", overtitle = gettextf("95%% Credible Interval"))
+
+  plot <- createJaspPlot(width = 600, height = 600)
+  plot$position <- 2
+  container[["plot"]] <- plot
+
+  if (!ready)
+    return()
+
+  LSL <- options[["contourLSL"]]
+  USL <- options[["contourUSL"]]
+  mu  <- mean(data[["long"]][[vars[["measurementLong"]]]])
+
+  # bivariate normal of the true value (variance: part) and the measurement (variance: total)
+  covMat  <- matrix(c(mean(draws[["part"]]), mean(draws[["part"]]),
+                      mean(draws[["part"]]), mean(draws[["total"]])), nrow = 2)
+  ellipse <- try(as.data.frame(ellipse::ellipse(covMat, centre = c(mu, mu), level = 0.95)))
+
+  if (isTryError(ellipse)) {
+    plot$setError(gettextf("Failed to calculate contour: %s", .rmNewLine(ellipse)))
+  } else {
+    colnames(ellipse) <- c("x", "y")
+    xBreaks <- jaspGraphs::getPrettyAxisBreaks(c(LSL, USL, ellipse[["x"]]))
+    yBreaks <- jaspGraphs::getPrettyAxisBreaks(c(LSL, USL, ellipse[["y"]]))
+
+    plot$plotObject <- ggplot2::ggplot(ellipse, ggplot2::aes(x = x, y = y)) +
+      ggplot2::geom_vline(xintercept = c(LSL, USL), linetype = "dashed", color = "black", linewidth = 1) +
+      ggplot2::geom_hline(yintercept = c(LSL, USL), linetype = "dashed", color = "black", linewidth = 1) +
+      ggplot2::geom_path(alpha = 0.5, colour = "steelblue", linewidth = 1) +
+      ggplot2::scale_x_continuous(name = gettext("True Value"), breaks = xBreaks, limits = range(xBreaks)) +
+      ggplot2::scale_y_continuous(name = gettext("Measurement"), breaks = yBreaks, limits = range(yBreaks)) +
+      ggplot2::coord_equal() +
+      jaspGraphs::themeJaspRaw() +
+      jaspGraphs::geom_rangeframe(sides = "bl")
+  }
+
+  risks <- .msabRisks(draws, mu, LSL, USL)
+  if (isTryError(risks)) {
+    risksTable$setError(gettextf("Risks could not be computed: %s<br>Try adjusting the specification limits.", .rmNewLine(risks)))
+    return()
+  }
+
+  risksTable$setData(risks)
+  risksTable$addFootnote(gettextf("Risks are computed for the specification limits LSL = %1$s and USL = %2$s. Make sure these match the specification limits of the process.",
+                                  LSL, USL))
+}
+
+# producer's risk (delta): P(measurement out of spec | true value in spec)
+# consumer's risk (beta):  P(measurement in spec | true value out of spec)
+.msabRisks <- function(draws, mu, LSL, USL, maxDraws = 8000) {
+  # thin the draws: the Monte Carlo error on the mean and the 95% CrI is negligible
+  idx <- unique(round(seq(1, nrow(draws), length.out = min(maxDraws, nrow(draws)))))
+  sdP <- sqrt(draws[["part"]][idx])
+  sdT <- sqrt(draws[["total"]][idx])
+
+  inSpec <- function(sd) pnorm(USL, mu, sd) - pnorm(LSL, mu, sd)
+  pTrue  <- inSpec(sdP) # P(true value in spec)
+  pMeas  <- inSpec(sdT) # P(measurement in spec)
+
+  # P(true value in spec and measurement in spec)
+  pBoth <- try(vapply(seq_along(idx), function(i) {
+    covMat <- matrix(c(sdP[i]^2, sdP[i]^2, sdP[i]^2, sdT[i]^2), nrow = 2)
+    mvtnorm::pmvnorm(lower = c(LSL, LSL), upper = c(USL, USL), mean = c(mu, mu), sigma = covMat)[1]
+  }, numeric(1)))
+
+  if (isTryError(pBoth))
+    return(pBoth)
+
+  delta <- (pTrue - pBoth) / pTrue
+  beta  <- (pMeas - pBoth) / (1 - pTrue)
+
+  if (anyNA(delta) || anyNA(beta) || any(!is.finite(c(delta, beta)))) {
+    res <- gettext("Non-finite values introduced during calculation.")
+    class(res) <- "try-error"
+    return(res)
+  }
+
+  data.frame(risks = c("\u03b4", "\u03b2"),
+             means = c(mean(delta), mean(beta)),
+             lower = c(quantile(delta, 0.025, names = FALSE), quantile(beta, 0.025, names = FALSE)),
+             upper = c(quantile(delta, 0.975, names = FALSE), quantile(beta, 0.975, names = FALSE)))
+}
+
+.msabRChart <- function(jaspResults, data, vars, ready) {
+  if (!is.null(jaspResults[["rChart"]]))
+    return()
+
+  container <- createJaspContainer(gettext("Range chart by operator"))
+  container$position <- 9
+  container$dependOn(c(.msabDataDeps, "rChart", "report"))
+  jaspResults[["rChart"]] <- container
+  container[["plot"]] <- createJaspPlot(width = 1200, height = 500)
+
+  if (!ready)
+    return()
+
+  chart <- .msabControlChart(data[["wide"]], vars, "R")
+  container[["plot"]]$plotObject <- chart$plotObject
+  container[["table"]] <- chart$table
+}
+
+.msabXbarChart <- function(jaspResults, data, vars, ready) {
+  if (!is.null(jaspResults[["xBarChart"]]))
+    return()
+
+  container <- createJaspContainer(gettext("Average chart by operator"))
+  container$position <- 10
+  container$dependOn(c(.msabDataDeps, "xBarChart", "report"))
+  jaspResults[["xBarChart"]] <- container
+  container[["plot"]] <- createJaspPlot(width = 1200, height = 500)
+
+  if (!ready)
+    return()
+
+  chart <- .msabControlChart(data[["wide"]], vars, "xBar")
+  container[["plot"]]$plotObject <- chart$plotObject
+  container[["table"]] <- chart$table
+}
+
+.msabControlChart <- function(dataWide, vars, plotType = c("R", "xBar")) {
+  plotType  <- match.arg(plotType)
+  operators <- vars[["operators"]]
+  .controlChart(dataset                   = dataWide[c(vars[["measurementsWide"]], operators)],
+                plotType                  = plotType,
+                ruleList                  = .getRuleListSubgroupCharts(list(testSet = "jaspDefault"), plotType),
+                xBarSdType                = "r",
+                stages                    = operators,
+                xAxisLabels               = dataWide[[vars[["parts"]]]][order(dataWide[[operators]])],
+                stagesSeparateCalculation = FALSE)
+}
+
+.msabScatterPlot <- function(jaspResults, data, options, vars, ready) {
+  if (!is.null(jaspResults[["gaugeScatterOperators"]]))
+    return()
+
+  plot <- createJaspPlot(title = gettext("Matrix plot for operators"), width = 700, height = 700)
+  plot$position <- 11
+  plot$dependOn(c(.msabDataDeps, "scatterPlot", "scatterPlotFitLine", "scatterPlotOriginLine", "report"))
+  jaspResults[["gaugeScatterOperators"]] <- plot
+
+  if (!ready)
+    return()
+
+  plot$plotObject <- .gaugeScatterPlotOperators(jaspResults, data[["wide"]], vars[["measurementsWide"]],
+                                                vars[["parts"]], vars[["operators"]], options, ready)$plotObject
+}
+
+.msabMeasureByPartPlot <- function(jaspResults, data, options, vars, ready) {
+  if (!is.null(jaspResults[["gaugeByPart"]]))
+    return()
+
+  plot <- createJaspPlot(title = gettext("Measurements by part"), width = 700, height = 300)
+  plot$position <- 12
+  plot$dependOn(c(.msabDataDeps, "partMeasurementPlot", "partMeasurementPlotAllValues", "report"))
+  jaspResults[["gaugeByPart"]] <- plot
+
+  if (!ready)
+    return()
+
+  plot$plotObject <- .gaugeByPartGraphPlotObject(data[["wide"]], vars[["measurementsWide"]], vars[["parts"]], vars[["operators"]],
+                                                 displayAll = options[["partMeasurementPlotAllValues"]])
+}
+
+.msabMeasureByOperatorPlot <- function(jaspResults, data, options, vars, ready) {
+  if (!is.null(jaspResults[["gaugeByOperator"]]))
+    return()
+
+  plot <- createJaspPlot(title = gettext("Measurements by operator"), width = 600, height = 600)
+  plot$position <- 13
+  plot$dependOn(c(.msabDataDeps, "operatorMeasurementPlot", "report"))
+  jaspResults[["gaugeByOperator"]] <- plot
+
+  if (!ready)
+    return()
+
+  plot$plotObject <- .gaugeByOperatorGraphPlotObject(data[["wide"]], vars[["measurementsWide"]], vars[["parts"]], vars[["operators"]],
+                                                     options, Type3 = options[["type3"]])
+}
+
+.msabPartByOperatorPlot <- function(jaspResults, data, options, vars, ready) {
+  if (!is.null(jaspResults[["gaugeByInteraction"]]))
+    return()
+
+  plot <- createJaspPlot(title = gettext("Part by operator interaction"), width = 700, height = 400)
+  plot$position <- 14
+  plot$dependOn(c(.msabDataDeps, "partByOperatorMeasurementPlot", "report"))
+  jaspResults[["gaugeByInteraction"]] <- plot
+
+  if (!ready)
+    return()
+
+  plot$plotObject <- .gaugeByInteractionGraphPlotFunction(data[["wide"]], vars[["measurementsWide"]], vars[["parts"]], vars[["operators"]],
+                                                          options, Type3 = options[["type3"]], ggPlot = TRUE)
+}
+
+#### Posterior distributions ----
+.msabPosteriors <- function(jaspResults, samples, draws, options, ready) {
+  if (!is.null(jaspResults[["posteriorSummaries"]]))
+    return()
+
+  container <- createJaspContainer(title = gettext("Posterior Distributions"))
+  container$position <- 8
+  container$dependOn(c(.msabComponentDeps, .msabStudyVarDeps, .msabToleranceDeps, .msabPosteriorDeps, "posteriorPlot", "report"))
+  jaspResults[["posteriorSummaries"]] <- container
+
+  table <- createJaspTable(title = gettext("Posterior Summary"))
+  table$position <- 1
+  container[["postSummary"]] <- table
+
+  cutOffMode <- options[["posteriorCiType"]] == "custom" && options[["customCiType"]] == "customCiCutOff"
+  cutOff     <- options[["posteriorCiCutOff"]]
+
+  table$addColumnInfo(name = "parameter", title = gettext("Source"), type = "string")
+  if (options[["posteriorPointEstimate"]]) {
+    pointTitle <- switch(options[["posteriorPointEstimateType"]],
+                         "mean"   = gettext("Mean"),
+                         "mode"   = gettext("Mode"),
+                         "median" = gettext("Median"))
+    table$addColumnInfo(name = "pointEstimate", title = pointTitle, type = "number")
+  }
+  if (options[["posteriorCi"]]) {
+    if (cutOffMode) {
+      table$addColumnInfo(name = "belowCutOff", title = gettextf("p(x < %s | data)", cutOff), type = "number")
+    } else {
+      mass      <- if (options[["posteriorCiType"]] == "custom") options[["posteriorCiUpper"]] - options[["posteriorCiLower"]] else options[["posteriorCiMass"]]
+      overtitle <- gettextf("%s%% Credible Interval", round(100 * mass, 1))
+      table$addColumnInfo(name = "ciLower", title = gettext("Lower"), type = "number", overtitle = overtitle)
+      table$addColumnInfo(name = "ciUpper", title = gettext("Upper"), type = "number", overtitle = overtitle)
+    }
+  }
+
+  if (!ready) {
+    container[["plot"]] <- createJaspPlot(width = 600, height = 320)
+    return()
+  }
+
+  posteriorSamples <- .msabPosteriorSamples(samples, draws, options)
+  ids              <- colnames(posteriorSamples)
+  labels           <- if (options[["posteriorPlotType"]] == "var") .msabParameterLabels(ids) else .msabSourceLabels(ids)
+
+  if (options[["setSeed"]])
+    set.seed(options[["seed"]])
+
+  dist      <- .msabDistFunctions(options[["distType"]])
+  bounded   <- .msabBoundedPercentage(options)
+  rows      <- vector("list", length(ids))
+  anyFailed <- FALSE
+
+  for (i in seq_along(ids)) {
+    x   <- posteriorSamples[, ids[i]]
+    # both distributions have positive support; truncated draws (historical sd) form a point mass at the bound
+    fit <- try(dist$fit(x[x > 0 & (!bounded | x < 100)], bounded))
+
+    plot <- createJaspPlot(title = labels[i], width = 600, height = 320)
+    plot$position <- i + 1
+    container[[ids[i]]] <- plot
+
+    if (isTryError(fit)) {
+      anyFailed <- TRUE
+      rows[[i]] <- data.frame(parameter = labels[i])
+      plot$setError(gettextf("The %1$s distribution could not be fit to the samples: %2$s", .msabDistName(options[["distType"]]), .rmNewLine(fit)))
+      next
+    }
+
+    stats     <- .msabPosteriorStats(fit, dist, options)
+    rows[[i]] <- data.frame(parameter = labels[i], as.list(stats))
+
+    p <- try(.msabPosteriorPlot(x, fit, dist, stats, labels[i], bounded, options))
+    if (isTryError(p)) {
+      plot$setError(.rmNewLine(p))
+    } else {
+      plot$plotObject <- p
+    }
+  }
+
+  fillDat <- .msabRbindFill(rows)
+
+  if (options[["posteriorCi"]]) {
+    if (cutOffMode) {
+      checked <- .checkProbabilityEstimates(fillDat[["belowCutOff"]])
+      fillDat[["belowCutOff"]] <- checked[["estimates"]]
+      if (checked[["large"]])
+        table$addFootnote(gettextf("p(x < %s | data) could not be calculated for some sources. The cut-off is probably too large or too small.", cutOff),
+                          symbol = gettext("<b>Warning:</b>"))
+      if (checked[["negative"]])
+        table$addFootnote(gettextf("Some estimates of p(x < %s | data) were negative and, therefore, removed. Try a different cut-off or distribution.", cutOff),
+                          symbol = gettext("<b>Warning:</b>"))
+    } else {
+      table$addFootnote(gettext("Credible intervals are estimated based on the distribution fit to the MCMC samples."))
+    }
+  }
+
+  if (options[["posteriorPlotType"]] != "var")
+    .msabAddCommonFootnotes(table, fillDat[, -1, drop = FALSE], draws)
+
+  if (anyFailed)
+    table$addFootnote(gettextf("The %s distribution could not be fit to the samples of some sources. Try selecting another distribution.", .msabDistName(options[["distType"]])),
+                      symbol = gettext("<b>Warning:</b>"))
+
+  table$setData(fillDat)
+}
+
+# samples used for the posterior plots, named by internal ids
+.msabPosteriorSamples <- function(samples, draws, options) {
+  if (options[["posteriorPlotType"]] == "var")
+    return(.arrayToMat(samples))
+
+  mat <- .msabTransformDraws(draws, options, options[["posteriorPlotType"]])
+
+  # constant columns (e.g. total variation in %Contribution) have no distribution
+  mat[, apply(mat, 2, function(col) any(col != col[1])), drop = FALSE]
+}
+
+# percentages that cannot exceed 100%
+.msabBoundedPercentage <- function(options) {
+  options[["posteriorPlotType"]] %in% c("percContrib", "percStudyVar") && options[["processVariationReference"]] != "historicalSd"
+}
+
+.msabDistName <- function(distType) {
+  switch(distType,
+         "gig"     = gettext("generalized inverse Gaussian"),
+         "metalog" = gettext("metalog"))
+}
+
+# fit, density, cdf and quantile functions per distribution
+.msabDistFunctions <- function(distType) {
+  switch(distType,
+         "gig" = list(
+           # the GIG quantile function is slow and unstable, so quantiles are based on random draws
+           fit       = function(x, bounded) {
+             param <- GeneralizedHyperbolic::gigFit(x)$param
+             list(param = param, randData = GeneralizedHyperbolic::rgig(1e5, param = param))
+           },
+           densityAt = function(fit, x) GeneralizedHyperbolic::dgig(x, param = fit$param),
+           grid      = function(fit) {
+             x <- quantile(fit$randData, seq(0.0005, 0.9995, length.out = 500), names = FALSE)
+             data.frame(x = x, y = GeneralizedHyperbolic::dgig(x, param = fit$param))
+           },
+           p         = function(fit, q) mean(fit$randData < q),
+           q         = function(fit, p) quantile(fit$randData, p, names = FALSE),
+           hpd       = function(fit, mass) HDInterval::hdi(fit$randData, credMass = mass),
+           mean      = function(fit) GeneralizedHyperbolic::gigMean(param = fit$param),
+           mode      = function(fit) GeneralizedHyperbolic::gigMode(param = fit$param)
+         ),
+         "metalog" = list(
+           fit       = function(x, bounded) {
+             if (bounded) {
+               rmetalog::metalog(x, bounds = c(0, 100), boundedness = "b", term_lower_bound = 5, term_limit = 5)
+             } else {
+               rmetalog::metalog(x, bounds = 0, boundedness = "sl", term_lower_bound = 5, term_limit = 5)
+             }
+           },
+           # density from the quantile function (dmetalog is slow): f(Q(p)) = 1 / Q'(p)
+           densityAt = function(fit, x) {
+             p <- rmetalog::pmetalog(m = fit, q = x, term = fit$params$term_limit)
+             1 / .msabMetalogQuantileDerivative(fit, pmin(pmax(p, 1e-5), 1 - 1e-5))
+           },
+           grid      = function(fit) {
+             p <- seq(0.0005, 0.9995, length.out = 500)
+             data.frame(x = .msabMetalogQuantile(fit, p), y = 1 / .msabMetalogQuantileDerivative(fit, p))
+           },
+           p         = function(fit, q) rmetalog::pmetalog(m = fit, q = q, term = fit$params$term_limit),
+           q         = function(fit, p) .msabMetalogQuantile(fit, p),
+           hpd       = function(fit, mass) HDInterval::hdi(function(p) .msabMetalogQuantile(fit, p), credMass = mass),
+           mean      = function(fit) integrate(function(p) .msabMetalogQuantile(fit, p), lower = 0, upper = 1)$value,
+           mode      = function(fit) {
+             p <- optimize(function(p) 1 / .msabMetalogQuantileDerivative(fit, p), interval = c(0.0005, 0.9995), maximum = TRUE)$maximum
+             .msabMetalogQuantile(fit, p)
+           }
+         ))
+}
+
+.msabMetalogQuantile <- function(fit, p) {
+  rmetalog::qmetalog(m = fit, y = p, term = fit$params$term_limit)
+}
+
+.msabMetalogQuantileDerivative <- function(fit, p, h = 1e-6) {
+  (.msabMetalogQuantile(fit, p + h) - .msabMetalogQuantile(fit, p - h)) / (2 * h)
+}
+
+.msabPosteriorStats <- function(fit, dist, options) {
+  safe  <- function(expr, n = 1) { res <- try(expr, silent = TRUE); if (isTryError(res) || length(res) != n) rep(NA_real_, n) else as.numeric(res) }
+  stats <- list()
+
+  if (options[["posteriorPointEstimate"]]) {
+    stats[["pointEstimate"]] <- switch(options[["posteriorPointEstimateType"]],
+                                       "mean"   = safe(dist$mean(fit)),
+                                       "median" = safe(dist$q(fit, 0.5)),
+                                       "mode"   = safe(dist$mode(fit)))
+  }
+
+  if (options[["posteriorCi"]]) {
+    ciType <- options[["posteriorCiType"]]
+    if (ciType == "custom" && options[["customCiType"]] == "customCiCutOff") {
+      stats[["belowCutOff"]] <- safe(suppressWarnings(dist$p(fit, options[["posteriorCiCutOff"]])))
+    } else {
+      mass <- options[["posteriorCiMass"]]
+      ci <- switch(ciType,
+                   "central" = safe(dist$q(fit, c((1 - mass) / 2, (1 + mass) / 2)), 2),
+                   "HPD"     = safe(dist$hpd(fit, mass), 2),
+                   "custom"  = safe(dist$q(fit, c(options[["posteriorCiLower"]], options[["posteriorCiUpper"]])), 2))
+      stats[["ciLower"]] <- ci[1]
+      stats[["ciUpper"]] <- ci[2]
+    }
+  }
+
+  return(stats)
+}
+
+.msabPosteriorPlot <- function(x, fit, dist, stats, label, bounded, options) {
+  # x-axis: up to the 99% quantile (and the CrI), or the full range for percentages bounded at 100
+  xUpper  <- if (bounded) 100 else max(dist$q(fit, 0.99), stats[["ciUpper"]], na.rm = TRUE)
+  xBreaks <- jaspGraphs::getPrettyAxisBreaks(c(0, xUpper))
+  xLims   <- range(xBreaks)
+
+  # density evaluated once on a grid within the support
+  densityDf <- dist$grid(fit)
+  densityDf <- densityDf[is.finite(densityDf[["y"]]) & densityDf[["x"]] >= xLims[1] & densityDf[["x"]] <= xLims[2], ]
+
+  p       <- ggplot2::ggplot()
+  maxDens <- max(densityDf[["y"]])
+
+  if (options[["posteriorHistogram"]]) {
+    breaks  <- seq(xLims[1], xLims[2], length.out = 31)
+    counts  <- tabulate(findInterval(x, breaks, rightmost.closed = TRUE), nbins = length(breaks) - 1)
+    histDf  <- data.frame(x = breaks, y = c(counts, counts[length(counts)]) / (length(x) * diff(breaks)[1]))
+    maxDens <- max(maxDens, histDf[["y"]])
+    p <- p + ggplot2::geom_step(data = histDf, mapping = ggplot2::aes(x = x, y = y), direction = "hv", linewidth = 1)
+  }
+
+  if (options[["posteriorCi"]]) {
+    shade <- if (is.null(stats[["belowCutOff"]])) {
+      c(stats[["ciLower"]], stats[["ciUpper"]])
+    } else if (!is.na(stats[["belowCutOff"]])) {
+      c(xLims[1], options[["posteriorCiCutOff"]])
+    } else {
+      NA
+    }
+
+    if (!anyNA(shade)) {
+      inside <- densityDf[densityDf[["x"]] > shade[1] & densityDf[["x"]] < shade[2], ]
+      edges  <- data.frame(x = shade, y = dist$densityAt(fit, shade))
+      areaDf <- rbind(edges[1, ], inside, edges[2, ])
+      areaDf <- areaDf[is.finite(areaDf[["y"]]), ]
+      p <- p + ggplot2::geom_area(data = areaDf, mapping = ggplot2::aes(x = x, y = y), fill = "grey")
+    }
+  }
+
+  p <- p + ggplot2::geom_line(data = densityDf, mapping = ggplot2::aes(x = x, y = y), linewidth = 1)
+
+  if (options[["posteriorPointEstimate"]] && !is.na(stats[["pointEstimate"]])) {
+    pointDf <- data.frame(x = stats[["pointEstimate"]], y = dist$densityAt(fit, stats[["pointEstimate"]]))
+    p <- p + ggplot2::geom_point(data = pointDf, mapping = ggplot2::aes(x = x, y = y),
+                                 shape = 21, size = 4, fill = "grey", stroke = 1)
+  }
+
+  xLab <- switch(options[["posteriorPlotType"]],
+                 "var"          = gettextf("Variance (%s)", label),
+                 "percContrib"  = gettextf("%% Contribution"),
+                 "percStudyVar" = gettextf("%% Study Variation"),
+                 "percTol"      = gettextf("%% Tolerance"))
+  yBreaks <- jaspGraphs::getPrettyAxisBreaks(c(0, maxDens))
+
+  p +
+    ggplot2::scale_x_continuous(name = xLab, breaks = xBreaks, limits = xLims) +
+    ggplot2::scale_y_continuous(name = gettext("Density"), breaks = yBreaks, limits = range(yBreaks)) +
+    jaspGraphs::themeJaspRaw() +
+    jaspGraphs::geom_rangeframe(sides = "bl")
+}
+
+.msabRbindFill <- function(rows) {
+  cols <- unique(unlist(lapply(rows, colnames)))
+  rows <- lapply(rows, function(r) { r[setdiff(cols, colnames(r))] <- NA; r[cols] })
+  do.call(rbind, rows)
+}
+
+#### MCMC diagnostics ----
+.msabDiagnostics <- function(jaspResults, samples, options, ready) {
+  if (!is.null(jaspResults[["mcmcDiagnostics"]]))
+    return()
+
+  container <- createJaspContainer(title = gettext("MCMC diagnostics"))
+  container$position <- 6
+  container$dependOn(c(.msabModelDeps, "diagnosticsTable", "diagnosticsPlots", "diagnosticsPlotType", "report"))
+  jaspResults[["mcmcDiagnostics"]] <- container
+
+  if (options[["diagnosticsTable"]]) {
+    table <- createJaspTable()
+    table$position <- 1
+    container[["table"]] <- table
+
+    table$addColumnInfo(name = "parameter",         title = gettext("Parameter"),   type = "string")
+    table$addColumnInfo(name = "essBulk",           title = gettext("ESS (Bulk)"),  type = "number")
+    table$addColumnInfo(name = "essTail",           title = gettext("ESS (Tail)"),  type = "number")
+    table$addColumnInfo(name = "rhat",              title = gettext("Rhat"),        type = "number")
+    table$addColumnInfo(name = "mcseMean",          title = gettext("MCSE (Mean)"), type = "number")
+    table$addColumnInfo(name = "mcseQuantileLower", title = "0.025",                type = "number", overtitle = gettext("MCSE (Quantiles)"))
+    table$addColumnInfo(name = "mcseQuantileUpper", title = "0.975",                type = "number", overtitle = gettext("MCSE (Quantiles)"))
+
+    if (ready) {
+      fillDat <- .msabDiagnosticsTableData(samples)
+      .msabAddCommonFootnotes(table, fillDat[, -1], NULL)
+      if (anyNA(fillDat))
+        table$addFootnote(gettext("Some diagnostics could not be calculated. Results might be unreliable."),
+                          symbol = gettext("<b>Warning:</b>"))
+      table$setData(fillDat)
+    }
+  }
+
+  if (!options[["diagnosticsPlots"]])
+    return()
+
+  if (!ready) {
+    container[["plot"]] <- createJaspPlot(width = 600, height = 320)
+    return()
+  }
+
+  ids    <- dimnames(samples)[[3]]
+  labels <- .msabParameterLabels(ids)
+  plotFun <- switch(options[["diagnosticsPlotType"]],
+                    "trace"   = .msabTracePlot,
+                    "autocor" = .msabAutocorPlot,
+                    "density" = .msabDensityDiagnosticsPlot)
+
+  for (i in seq_along(ids)) {
+    plot <- createJaspPlot(title = labels[i], width = 600, height = 320)
+    plot$position <- i + 1
+    container[[ids[i]]] <- plot
+
+    p <- try(plotFun(.msabChainMatrix(samples, ids[i]), labels[i]))
+    if (isTryError(p)) {
+      plot$setError(.rmNewLine(p))
+    } else {
+      plot$plotObject <- p
+    }
+  }
+}
+
+.msabDiagnosticsTableData <- function(samples) {
+  ids <- dimnames(samples)[[3]]
+  res <- lapply(ids, function(id) {
+    x   <- .msabChainMatrix(samples, id)
+    mcq <- posterior::mcse_quantile(x, probs = c(0.025, 0.975))
+    data.frame(essBulk           = posterior::ess_bulk(x),
+               essTail           = posterior::ess_tail(x),
+               rhat              = posterior::rhat(x),
+               mcseMean          = posterior::mcse_mean(x),
+               mcseQuantileLower = mcq[[1]],
+               mcseQuantileUpper = mcq[[2]])
+  })
+  cbind(parameter = .msabParameterLabels(ids, html = TRUE), do.call(rbind, res))
+}
+
+# iterations x chains matrix of one parameter
+.msabChainMatrix <- function(samples, id) {
+  matrix(samples[, , id], ncol = dim(samples)[2])
+}
+
+.msabChainsLong <- function(x) {
+  data.frame(iteration = rep(seq_len(nrow(x)), ncol(x)),
+             value     = as.vector(x),
+             chain     = factor(rep(seq_len(ncol(x)), each = nrow(x))))
+}
+
+.msabTracePlot <- function(x, label) {
+  df      <- .msabChainsLong(x)
+  xBreaks <- jaspGraphs::getPrettyAxisBreaks(range(df[["iteration"]]))
+  yBreaks <- jaspGraphs::getPrettyAxisBreaks(range(df[["value"]]))
+
+  ggplot2::ggplot(df, ggplot2::aes(x = iteration, y = value, colour = chain)) +
+    ggplot2::geom_line(linewidth = 0.3) +
+    jaspGraphs::scale_JASPcolor_discrete(name = gettext("Chain")) +
+    ggplot2::scale_x_continuous(name = gettext("Iteration"), breaks = xBreaks, limits = range(xBreaks)) +
+    ggplot2::scale_y_continuous(name = gettextf("Variance (%s)", label), breaks = yBreaks, limits = range(yBreaks)) +
+    jaspGraphs::geom_rangeframe() +
+    jaspGraphs::themeJaspRaw(legend.position = "right")
+}
+
+.msabAutocorPlot <- function(x, label) {
+  df <- do.call(rbind, lapply(seq_len(ncol(x)), function(i) {
+    a <- acf(x[, i], lag.max = 20, plot = FALSE)
+    data.frame(lag = as.vector(a$lag), acf = as.vector(a$acf), chain = i)
+  }))
+  df[["chain"]] <- factor(df[["chain"]])
+  yBreaks <- jaspGraphs::getPrettyAxisBreaks(c(0, df[["acf"]]))
+
+  ggplot2::ggplot(df, ggplot2::aes(x = lag, y = acf, colour = chain)) +
+    ggplot2::geom_hline(yintercept = 0, alpha = 0.5) +
+    ggplot2::geom_line() +
+    jaspGraphs::scale_JASPcolor_discrete(name = gettext("Chain")) +
+    ggplot2::scale_x_continuous(name = gettext("Lag"), breaks = seq(0, 20, 5), limits = c(0, 20)) +
+    ggplot2::scale_y_continuous(name = gettext("Autocorrelation"), breaks = yBreaks, limits = range(yBreaks)) +
+    jaspGraphs::geom_rangeframe() +
+    jaspGraphs::themeJaspRaw(legend.position = "right")
+}
+
+.msabDensityDiagnosticsPlot <- function(x, label) {
+  xBreaks <- jaspGraphs::getPrettyAxisBreaks(quantile(x, c(0.001, 0.999), names = FALSE))
+  xLims   <- range(xBreaks)
+
+  df <- do.call(rbind, lapply(seq_len(ncol(x)), function(i) {
+    d <- density(x[, i], from = xLims[1], to = xLims[2], n = 512)
+    data.frame(x = d$x, y = d$y, chain = i)
+  }))
+  df[["chain"]] <- factor(df[["chain"]])
+  yBreaks <- jaspGraphs::getPrettyAxisBreaks(c(0, df[["y"]]))
+
+  ggplot2::ggplot(df, ggplot2::aes(x = x, y = y, colour = chain)) +
+    ggplot2::geom_line() +
+    jaspGraphs::scale_JASPcolor_discrete(name = gettext("Chain")) +
+    ggplot2::scale_x_continuous(name = gettextf("Variance (%s)", label), breaks = xBreaks, limits = xLims) +
+    ggplot2::scale_y_continuous(name = gettext("Density"), breaks = yBreaks, limits = range(yBreaks)) +
+    jaspGraphs::geom_rangeframe() +
+    jaspGraphs::themeJaspRaw(legend.position = "right")
+}
+
+#### Report ----
+.msabReport <- function(jaspResults, data, draws, options, vars, ready) {
+  if (!is.null(jaspResults[["report"]]))
+    return()
+
+  type3      <- options[["type3"]]
+  components <- c(gaugeTable            = options[["reportGaugeTable"]],
+                  variationComponents   = options[["reportVariationComponents"]],
+                  measurementsByPart    = options[["reportMeasurementsByPartPlot"]],
+                  rChart                = options[["reportRChartByOperator"]] && !type3,
+                  measurementsOperator  = options[["reportMeasurementsByOperatorPlot"]] && !type3,
+                  averageChart          = options[["reportAverageChartByOperator"]] && !type3,
+                  partByOperator        = options[["reportPartByOperatorPlot"]] && !type3,
+                  trafficLight          = options[["reportTrafficLightChart"]],
+                  metaData              = options[["reportMetaData"]])
+  nElements <- sum(components)
+
+  reportPlot <- createJaspPlot(title = gettext("Gauge r&R report"), width = 1250, height = max(1, ceiling(nElements / 2)) * 500)
+  reportPlot$dependOn(c(.msabComponentDeps, .msabStudyVarDeps, .msabToleranceDeps, .msabReportDeps))
   jaspResults[["report"]] <- reportPlot
-  jaspResults[["report"]]$dependOn(c("type3", "tolerance", "toleranceValue",  "studyVarianceMultiplierType",
-                                     "studyVarianceMultiplierValue", "scatterPlotFitLine", "scatterPlotOriginLine",
-                                     "partMeasurementPlotAllValues", .varCompTableDependencies(), .reportDependencies()))
 
   if (nElements == 0) {
     reportPlot$setError(gettext("No report components selected."))
     return()
   }
 
-  if(!ready) {
+  if (!ready)
     return()
-  }
 
-  # title
-  title <- .getReportTitle(options)
+  dataWide     <- data[["wide"]]
+  measurements <- vars[["measurementsWide"]]
+  parts        <- vars[["parts"]]
+  operators    <- vars[["operators"]]
 
-  # meta data
-  text <- .getReportMetaData(options)
-
-  # plots
-  plots <- .getReportPlots(jaspResults, dataset, measurements, parts, operators, options)
-
-  # table
-  tables <- .getReportTable(jaspResults, parts, operators, options)
-  if(options$tolerance) {
-    tableTitles <- list(list("Gauge evaluation", ""), "")
-  } else {
-    tableTitles <- list(list("Gauge evaluation", ""))
-  }
-
-  reportPlotObject <- .qcReport(text = text, plots = plots, tables = tables, textMaxRows = 8,
-                                tableTitles = tableTitles, reportTitle = title, tableSize = 6)
-  reportPlot$plotObject <- reportPlotObject
-
-  return()
-}
-
-### Data reading & error checks
-.msabComputeDerivedOptions <- function(options) {
-  wideFormat <- options[["dataFormat"]] == "wideFormat"
-  if (wideFormat) {
-    options$measurements <- unlist(options[["measurementsWideFormat"]])
-    options$parts <- unlist(options[["partWideFormat"]])
-    options$operators <- unlist(options[["operatorWideFormat"]])
-  } else {
-    options$measurements <- unlist(options[["measurementLongFormat"]])
-    options$parts <- unlist(options[["partLongFormat"]])
-    options$operators <- unlist(options[["operatorLongFormat"]])
-  }
-
-  if(options$type3) {
-    options$operators <- "operators"
-  }
-
-  options$wideFormat <- wideFormat
-
-  # rule set for xBar and R charts
-  options$testSet <- "jaspDefault"
-
-  return(options)
-}
-
-.msabIsReady <- function(options) {
-  wideFormat <- options$wideFormat
-  if (wideFormat && !options[["type3"]]) {
-    ready <- (length(options$measurements) > 1 && !identical(options$operators, "") && !identical(options$parts, ""))
-  } else if (wideFormat && options[["type3"]]) {
-    ready <- (length(options$measurements) > 1 && !identical(options$parts, ""))
-  } else if (!wideFormat && !options[["type3"]]) {
-    ready <- (options$measurements != "" && !identical(options$operators, "") && !identical(options$parts, ""))
-  }  else if (!wideFormat && options[["type3"]]) {
-    ready <- (!identical(options$measurements, "") && !identical(options$parts, ""))
-  }
-
-  if(options$estimationType == "manual"){
-    if(options$modelType == "fullModel" || options$modelType == "mainEffectsOnly") {
-      ready <- ready
+  plots <- list()
+  if (components[["variationComponents"]])
+    plots[[length(plots) + 1]] <- .msabVarCompPlot(jaspResults, draws, options, ready, plotOnly = TRUE)
+  if (components[["measurementsByPart"]])
+    plots[[length(plots) + 1]] <- .gaugeByPartGraphPlotObject(dataWide, measurements, parts, operators, displayAll = FALSE)
+  if (components[["rChart"]])
+    plots[[length(plots) + 1]] <- .msabControlChart(dataWide, vars, "R")$plotObject
+  if (components[["measurementsOperator"]])
+    plots[[length(plots) + 1]] <- .gaugeByOperatorGraphPlotObject(dataWide, measurements, parts, operators, options, Type3 = type3)
+  if (components[["averageChart"]])
+    plots[[length(plots) + 1]] <- .msabControlChart(dataWide, vars, "xBar")$plotObject
+  if (components[["partByOperator"]])
+    plots[[length(plots) + 1]] <- .gaugeByInteractionGraphPlotFunction(dataWide, measurements, parts, operators, options, Type3 = type3, ggPlot = TRUE)
+  if (components[["trafficLight"]]) {
+    trafficPlots <- .msabTrafficLightPlot(jaspResults, draws, options, ready, plotOnly = TRUE)
+    if (options[["tolerance"]]) {
+      plots[[length(plots) + 1]] <- trafficPlots$p1
+      plots[[length(plots) + 1]] <- trafficPlots$p2
     } else {
-      ready <- FALSE
+      plots[[length(plots) + 1]] <- trafficPlots
     }
   }
 
-  return(ready)
+  tables      <- NULL
+  tableTitles <- ""
+  if (components[["gaugeTable"]]) {
+    tables      <- .msabReportTables(draws, options)
+    tableTitles <- if (options[["tolerance"]]) list(list(gettext("Gauge evaluation"), ""), "") else list(list(gettext("Gauge evaluation"), ""))
+  }
+
+  reportPlot$plotObject <- .qcReport(text = if (options[["reportMetaData"]]) .getReportMetaData(options) else NULL,
+                                     plots = plots, tables = tables, textMaxRows = 8,
+                                     tableTitles = tableTitles, reportTitle = .getReportTitle(options), tableSize = 6)
 }
 
-.msabReadDataset <- function(dataset, options, ready) {
-  wideFormat <- options$wideFormat
-  numericVars <- options$measurements
-  numericVars <- numericVars[numericVars != ""]
-  factorVars <- c(options$parts, options$operators)
-  factorVars <- factorVars[factorVars != "" & factorVars != "operators"]
-
-  if (is.null(dataset)) {
-    dataset <- .readDataSetToEnd(columns.as.numeric = numericVars, columns.as.factor = factorVars)
-  }
-
-  if (ready) {
-    for (v in factorVars)
-      dataset[[v]] <- as.factor(dataset[[v]])
-    if (options$type3)
-      dataset$operators <- factor(rep(1, nrow(dataset)))
-  }
-
-  datasets <- list()
-  # Converting wide to long format
-  if(wideFormat && ready) {
-    datasets[["dataWide"]] <- dataset # wide data for plotting functions
-    datasets[["dataLong"]] <- .convertToLong(dataset, options$measurements)
-  }
-
-  if(!wideFormat && ready) {
-    datasets[["dataLong"]] <- dataset
-    datasets[["dataWide"]] <- .convertToWide(dataset, options$measurements, options$parts, options$operators)
-  }
-
-  return(datasets)
+.getReportTitle <- function(options) {
+  if (!options[["reportTitle"]])
+    return("")
+  if (options[["reportTitleText"]] == "") gettext("Gauge r&R report") else options[["reportTitleText"]]
 }
 
-.msabAdjustVarNames <- function(options, dataWide, ready) {
-  if(options$wideFormat && ready) {
-    options$measurements <- "Measurements" # name assigned to the column inside the conversion function
-  }
-
-  if(!is.null(dataWide)) {
-    # names of measurement columns in wide format
-    options$measurementsWide <- colnames(dataWide)[!colnames(dataWide) %in% c(options$parts, options$operators)]
-  }
-
-  return(options)
+.getReportMetaData <- function(options) {
+  text <- c()
+  if (options[["reportPartName"]])       text <- c(text, gettextf("Part name: %s", options[["reportPartNameText"]]))
+  if (options[["reportGaugeName"]])      text <- c(text, gettextf("Gauge name: %s", options[["reportGaugeNameText"]]))
+  if (options[["reportCharacteristic"]]) text <- c(text, gettextf("Characteristic: %s", options[["reportCharacteristicText"]]))
+  if (options[["reportGaugeNumber"]])    text <- c(text, gettextf("Gauge number: %s", options[["reportGaugeNumberText"]]))
+  if (options[["reportTolerance"]])      text <- c(text, gettextf("Tolerance: %s", options[["reportToleranceText"]]))
+  if (options[["reportLocation"]])       text <- c(text, gettextf("Location: %s", options[["reportLocationText"]]))
+  if (options[["reportPerformedBy"]])    text <- c(text, gettextf("Performed by: %s", options[["reportPerformedByText"]]))
+  if (options[["reportDate"]])           text <- c(text, gettextf("Date: %s", options[["reportDateText"]]))
+  return(text)
 }
 
-.msabCheckErrors <- function(jaspResults, options, ready, dataset, dataWide) {
-  measurements <- options[["measurements"]]
-  parts <- options[["parts"]]
-  operators <- options[["operators"]]
+.msabReportTables <- function(draws, options) {
+  types    <- c("sd", "studyVar", "percStudyVar", if (options[["tolerance"]]) "percTol")
+  colNames <- c(gettext("Source"), gettext("Std. dev."), gettext("Study variation"), gettextf("%%Study variation"),
+                if (options[["tolerance"]]) gettextf("%%Tolerance"))
 
-  # check for equal amount of replicates
-  if(anyNA(dataWide)) {
-    errorMsg <- gettext("Number of replicates differ per operator/part. Make sure that each operator measures each part equally often.")
-    .quitAnalysis(errorMsg)
+  columns <- lapply(types, function(type) {
+    s <- .msabSummariseDraws(.msabTransformDraws(draws, options, type))
+    .msabFormatEstimate(s[["mean"]], s[["lower"]], s[["upper"]])
+  })
+  out <- data.frame(.msabSourceLabels(colnames(draws)), columns)
+  colnames(out) <- colNames
+
+  nDistinct   <- .msabDistinctCategories(draws)
+  nDistinctDf <- data.frame(gettext("Number of distinct categories"),
+                            .msabFormatEstimate(nDistinct[["mean"]], nDistinct[["lower"]], nDistinct[["upper"]]))
+  colnames(nDistinctDf) <- NULL
+
+  # split data frame as it would otherwise be cut off in the report
+  if (options[["tolerance"]]) {
+    tolOut <- out[, c(1, ncol(out))]
+    out    <- out[, -ncol(out)]
+    return(list(list(out, nDistinctDf), tolOut))
   }
 
-  # Checking for infinity and missingValues
-  .hasErrors(dataset, type = c('infinity', 'missingValues'),
-             infinity.target = measurements,
-             missingValues.target = c(measurements, parts, operators),
-             exitAnalysisIfErrors = TRUE)
+  return(list(list(out, nDistinctDf)))
+}
 
-  if(ready && !options[["type3"]]){
-    crossed <- .checkIfCrossed(dataset, operators, parts, measurements)
-    if(!crossed){
-      plot <- createJaspPlot(title = gettext("Gauge r&R"), width = 700, height = 400)
-      jaspResults[["plot"]] <- plot
-      plot$setError(gettext("Design is not balanced: not every operator measured every part. Use non-replicable gauge r&R."))
-      return()
-    }
-  }
+.msabFormatEstimate <- function(mean, lower, upper) {
+  ifelse(is.na(lower), as.character(round(mean, 2)),
+         paste0(round(mean, 2), " (", round(lower, 2), ", ", round(upper, 2), ")"))
+}
 
-  # Checking whether type3 is used correctly
-  Type3 <- c(length(unique(dataset[[operators]])) == 1 || options$type3)
-  .hasErrors(dataset,
-             target = measurements,
-             custom = function() {
-               if (Type3 && !options$type3)
-                 return("This dataset seems to have only a single unique operator. Please use the Type 3 study by checking the box below.")},
-             exitAnalysisIfErrors = TRUE)
+#### Helpers ----
+.checkProbabilityEstimates <- function(estimates) {
+  negative <- !is.na(estimates) & estimates < 0
+  list(large     = anyNA(estimates),
+       negative  = any(negative),
+       estimates = replace(estimates, negative, NA))
+}
 
-  # Checking whether the format wide is used correctly
-  if (ready)
-    .hasErrors(dataWide,
-               target = measurements,
-               custom = function() {
-                 dataToBeChecked <- dataWide[dataWide[[operators]] == dataWide[[operators]][1],]
-                 partsLevels <- length(levels(dataToBeChecked[[parts]]))
-                 partsLength <- length(dataToBeChecked[[parts]])
-                 if (options$wideFormat && partsLevels != partsLength && !Type3)
-                   return(gettextf("The measurements selected seem to be in a 'Single Column' format as every operator's part is measured %d times.", partsLength/partsLevels))},
-               exitAnalysisIfErrors = FALSE)
+.hasExtremeValues <- function(df) {
+  nums <- suppressWarnings(as.numeric(unlist(df, use.names = FALSE)))
+  nums <- nums[!is.na(nums)]
+  list(large = any(abs(nums) > 1e50),
+       small = any(abs(nums) < 1e-50 & nums != 0))
+}
+
+.rmNewLine <- function(msg) {
+  gsub("\\n", "", gsub("\\n ", "", msg))
 }
