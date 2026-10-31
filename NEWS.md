@@ -21,9 +21,11 @@
 * Process Capability / control charts: added "Pooled" as a within-subgroup standard deviation estimation method (in addition to R-bar and S-bar).
 
 ## Changed
+* DOE Analysis, Factorial Design and Response Surface Design: help moved from markdown files into the QML `info` properties.
 * DOE Analysis: the contour plot is now drawn with ggplot2 instead of base graphics, so it renders correctly in interactive (plotly) mode, and always shows its legend. The "Show legend next to graph" option was removed; surface plots no longer show a color legend.
 
 ## Fixed
+* DOE Analysis: with type II/III sums of squares, the ANOVA table's Model and Total rows no longer just add up the individual term SS (which is only valid for type I). Model SS is now SST − SSE, with F/p from the overall regression test, and Total SS is SST. The grouped rows (Linear, Squared, Interaction terms, Covariates) are now tested jointly and report MS, F and p.
 * Stepwise model selection in the Response Surface design now respects marginality: a squared term is no longer retained without its corresponding main effect.
 * Process Capability: distribution/fit density curves no longer render flat in interactive (plotly) plots; the curves are now drawn with `geom_line` instead of `stat_function`.
 * Process Capability: the x-axis of the capability plot is no longer stretched towards the default historical scale (Weibull) or log mean (log-normal) when no historical parameter is set, which squeezed the histogram and fitted density into a narrow strip for data far from zero.
