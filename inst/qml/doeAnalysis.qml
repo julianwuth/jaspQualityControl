@@ -41,11 +41,13 @@ Form
 		id: 									designType
 		name:									"designType"
 		label:									qsTr("Design type")
-		info:									qsTr("Select the type of experimental design you want to analyse.")
+		info:									qsTr("Select the type of experimental design you want to analyse.") + "\n"
+												+ "- **" + qsTr("Factorial design") + "**: " + qsTr("A factorial design is an experimental setup used to study the effects of multiple factors by varying them simultaneously. Each factor is tested at different levels and in different combinations with other factors. This design allows for the examination of both the main effects of each factor and the interactions between factors.") + "\n"
+												+ "- **" + qsTr("Response surface design") + "**: " + qsTr("A response surface design is an experimental framework used to optimize and understand the relationships between several explanatory variables and one or more response variables. Besides main effects and interactions, it allows to estimate squared terms, which describe the curvature of the response. This gives a detailed map of the response landscape, which helps to find optimal conditions.")
 		indexDefaultValue:						0
 		values: [
-				{ label: qsTr("Factorial design"), value: "factorialDesign", info: qsTr("A factorial design is an experimental setup used to study the effects of multiple factors by varying them simultaneously. Each factor is tested at different levels and in different combinations with other factors. This design allows for the examination of both the main effects of each factor and the interactions between factors.")},
-				{ label: qsTr("Response surface design"), value: "responseSurfaceDesign", info: qsTr("A response surface design is an experimental framework used to optimize and understand the relationships between several explanatory variables and one or more response variables. Besides main effects and interactions, it allows to estimate squared terms, which describe the curvature of the response. This gives a detailed map of the response landscape, which helps to find optimal conditions.")}
+				{ label: qsTr("Factorial design"), value: "factorialDesign"},
+				{ label: qsTr("Response surface design"), value: "responseSurfaceDesign"}
 				]
 	}
 
@@ -332,13 +334,17 @@ Form
 					id: 									rsmPredefinedTerms
 					name:									"rsmPredefinedTerms"
 					label:									qsTr("Include following terms")
-					info:									qsTr("The terms of the predefined model.")
+					info:									qsTr("The terms of the predefined model.") + "\n"
+															+ "- **" + qsTr("Linear") + "**: " + qsTr("Main effects only.") + "\n"
+															+ "- **" + qsTr("Linear and interaction terms") + "**: " + qsTr("Main effects and all two-way interactions.") + "\n"
+															+ "- **" + qsTr("Linear and squared terms") + "**: " + qsTr("Main effects and the squared terms of all continuous factors.") + "\n"
+															+ "- **" + qsTr("Full quadratic") + "**: " + qsTr("Main effects, all two-way interactions and the squared terms of all continuous factors.")
 					indexDefaultValue:						3
 					values: [
-							{ label: qsTr("Linear"), value: "linear", info: qsTr("Main effects only.")},
-							{ label: qsTr("Linear and interaction terms"), value: "linearAndInteractions", info: qsTr("Main effects and all two-way interactions.")},
-							{ label: qsTr("Linear and squared terms"), value: "linearAndSquared", info: qsTr("Main effects and the squared terms of all continuous factors.")},
-							{ label: qsTr("Full quadratic"), value: "fullQuadratic", info: qsTr("Main effects, all two-way interactions and the squared terms of all continuous factors.")}
+							{ label: qsTr("Linear"), value: "linear"},
+							{ label: qsTr("Linear and interaction terms"), value: "linearAndInteractions"},
+							{ label: qsTr("Linear and squared terms"), value: "linearAndSquared"},
+							{ label: qsTr("Full quadratic"), value: "fullQuadratic"}
 							]
 					}
 		}
@@ -765,13 +771,16 @@ Form
 		{
 			name:							"sumOfSquaresType"
 			label:							qsTr("Sum of squares type")
-			info:							qsTr("How the sum of squares of each term in the ANOVA table is calculated. The types differ in which other terms a term is adjusted for. In balanced designs, such as complete factorial designs, all types give the same result. In unbalanced designs, e.g. with missing runs, covariates or squared terms, they can differ. The Model, Error and Total rows are the same for all types. See the description of the ANOVA table below.")
+			info:							qsTr("How the sum of squares of each term in the ANOVA table is calculated. The types differ in which other terms a term is adjusted for. In balanced designs, such as complete factorial designs, all types give the same result. In unbalanced designs, e.g. with missing runs, covariates or squared terms, they can differ. The Model, Error and Total rows are the same for all types. See the description of the ANOVA table below.") + "\n"
+											+ "- **" + qsTr("Type I") + "**: " + qsTr("Sequential sums of squares: each term is adjusted only for the terms entered before it, so the results depend on the order of the terms. The term rows add up to the Model row.") + "\n"
+											+ "- **" + qsTr("Type II") + "**: " + qsTr("Each term is adjusted for all other terms, except for higher-order terms that contain it. For example, A is adjusted for B, but not for A✻B.") + "\n"
+											+ "- **" + qsTr("Type III") + "**: " + qsTr("Each term is adjusted for all other terms in the model, i.e. it measures what the term adds when it is entered last. Results for lower-order terms depend on how the factors are coded.")
 			id: 							sumOfSquaresType
 			indexDefaultValue:				2
 			values: [
-				{ label: qsTr("Type I"), value: "type1", info: qsTr("Sequential sums of squares: each term is adjusted only for the terms entered before it, so the results depend on the order of the terms. The term rows add up to the Model row.")},
-				{ label: qsTr("Type II"), value: "type2", info: qsTr("Each term is adjusted for all other terms, except for higher-order terms that contain it. For example, A is adjusted for B, but not for A✻B.")},
-				{ label: qsTr("Type III"), value: "type3", info: qsTr("Each term is adjusted for all other terms in the model, i.e. it measures what the term adds when it is entered last. Results for lower-order terms depend on how the factors are coded.")},
+				{ label: qsTr("Type I"), value: "type1"},
+				{ label: qsTr("Type II"), value: "type2"},
+				{ label: qsTr("Type III"), value: "type3"}
 			]
 		}
 
