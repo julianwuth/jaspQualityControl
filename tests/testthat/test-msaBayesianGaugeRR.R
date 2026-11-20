@@ -1607,6 +1607,43 @@ test_that("Posterior summary with custom cut-off matches", {
                                       ))
 })
 
+test_that("Posterior summary without point estimate and credible interval shows only sources", {
+  options <- .msabTestOptions()
+  options$RRTable <- FALSE
+  options$posteriorPlot <- TRUE
+  options$posteriorPointEstimate <- FALSE
+  options$posteriorCi <- FALSE
+  set.seed(1)
+  results <- runAnalysis("msaBayesianGaugeRR", "datasets/msaGaugeRRCrossed/msaGaugeRRCrossed_long.csv", options, view = FALSE)
+  expect_identical(results[["status"]], "complete")
+  collection <- results[["results"]][["posteriorSummaries"]][["collection"]]
+  table      <- collection[["posteriorSummaries_postSummary"]]
+  plots      <- collection[setdiff(names(collection), "posteriorSummaries_postSummary")]
+  expect_length(table[["data"]], length(plots))
+  expect_true(length(plots) >= 3)
+  for (row in table[["data"]])
+    expect_identical(names(row), "parameter")
+  for (plot in plots)
+    expect_identical(plot[["status"]], "complete")
+})
+
+test_that("Risks exclude posterior samples with truncated part variance", {
+  options <- .msabTestOptions()
+  options$processVariationReference <- "historicalSd"
+  options$historicalSdValue <- 1.2
+  options$contourPlot <- TRUE
+  options$contourLSL <- -10
+  options$contourUSL <- 0
+  set.seed(1)
+  results <- runAnalysis("msaBayesianGaugeRR", "datasets/msaGaugeRRCrossed/msaGaugeRRCrossed_long.csv", options, view = FALSE)
+  expect_identical(results[["status"]], "complete")
+  table <- results[["results"]][["contourPlot"]][["collection"]][["contourPlot_table"]]
+  expect_length(table[["data"]], 2)
+  expect_true(all(vapply(table[["data"]], function(row) is.numeric(row[["means"]]), logical(1))))
+  footnotes <- vapply(table[["footnotes"]], `[[`, character(1), "text")
+  expect_true(any(grepl("these samples were excluded", footnotes, fixed = TRUE)))
+})
+
 test_that("Report without gauge evaluation table is created", {
   options <- .msabTestOptions()
   options$report <- TRUE
@@ -1615,4 +1652,33 @@ test_that("Report without gauge evaluation table is created", {
   results <- runAnalysis("msaBayesianGaugeRR", "datasets/msaGaugeRRCrossed/msaGaugeRRCrossed_long.csv", options, view = FALSE)
   expect_identical(results[["status"]], "complete")
   expect_identical(results[["results"]][["report"]][["status"]], "complete")
+})
+
+.msabExpectQqPlot <- function(results, nObs) {
+  expect_identical(results[["status"]], "complete")
+  qqPlot <- results[["results"]][["residualQqPlot"]]
+  expect_false(is.null(qqPlot))
+  expect_identical(qqPlot[["status"]], "complete")
+  plotData <- results[["state"]][["figures"]][[qqPlot[["data"]]]][["obj"]][["data"]]
+  expect_identical(nrow(plotData), nObs)
+  expect_false(is.unsorted(plotData[["residual"]]))
+  expect_false(is.unsorted(plotData[["theoretical"]]))
+  expect_true(all(plotData[["lower"]] <= plotData[["residual"]] & plotData[["residual"]] <= plotData[["upper"]]))
+}
+
+test_that("Residual Q-Q plot is created", {
+  options <- .msabTestOptions()
+  options$residualQqPlot <- TRUE
+  set.seed(1)
+  results <- runAnalysis("msaBayesianGaugeRR", "datasets/msaGaugeRRCrossed/msaGaugeRRCrossed_long.csv", options, view = FALSE)
+  .msabExpectQqPlot(results, nrow(.msabTestData()))
+})
+
+test_that("Residual Q-Q plot is created for a type 3 study", {
+  options <- .msabTestOptions()
+  options$type3 <- TRUE
+  options$residualQqPlot <- TRUE
+  set.seed(1)
+  results <- runAnalysis("msaBayesianGaugeRR", "datasets/msaGaugeRRCrossed/msaGaugeRRCrossed_long.csv", options, view = FALSE)
+  .msabExpectQqPlot(results, nrow(.msabTestData()))
 })

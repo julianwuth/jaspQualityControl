@@ -20,19 +20,22 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
   vars  <- .msabVariables(options)
   ready <- .msabIsReady(vars)
 
-  data    <- NULL
-  fits    <- NULL
-  model   <- NULL
-  samples <- NULL
-  draws   <- NULL
+  data      <- NULL
+  fits      <- NULL
+  model     <- NULL
+  samples   <- NULL
+  residuals <- NULL
+  draws     <- NULL
 
   if (ready) {
-    data    <- .msabReadDataset(dataset, options, vars)
-    vars    <- data[["vars"]]
-    fits    <- .msabFitModels(jaspResults, data[["long"]], options, vars)
-    model   <- .msabSelectModel(fits, options)
-    samples <- .msabRunMCMC(jaspResults, fits[[model]], options, vars)
-    draws   <- .msabComponentDraws(samples, options)
+    data      <- .msabReadDataset(dataset, options, vars)
+    vars      <- data[["vars"]]
+    fits      <- .msabFitModels(jaspResults, data[["long"]], options, vars)
+    model     <- .msabSelectModel(fits, options)
+    mcmc      <- .msabRunMCMC(jaspResults, fits[[model]], options, vars)
+    samples   <- mcmc[["samples"]]
+    residuals <- mcmc[["residuals"]]
+    draws     <- .msabComponentDraws(samples, options)
   }
 
   if (options[["report"]]) {
@@ -52,6 +55,9 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
 
   if (options[["diagnosticsTable"]] || options[["diagnosticsPlots"]])
     .msabDiagnostics(jaspResults, samples, options, ready)
+
+  if (options[["residualQqPlot"]])
+    .msabQqPlot(jaspResults, residuals, options, ready)
 
   if (options[["varianceComponentsGraph"]])
     .msabVarCompPlot(jaspResults, draws, options, ready)
@@ -321,14 +327,26 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
   burnin  <- options[["mcmcBurnin"]]
   iter    <- options[["mcmcIterations"]]
 
+  # design matrix (one row per observation, intercept first) aligned to the coefficient columns of the chain
+  designMatrix <- BayesFactor::model.matrix(fit)
+  response     <- fit@data[[vars[["measurementLong"]]]]
+  coefCols     <- seq_len(ncol(designMatrix))
+
+  # at most 1000 evenly spaced post burn-in draws per chain are used for the residuals
+  residualRows <- unique(round(seq(burnin + 1, iter, length.out = min(iter - burnin, 1000))))
+
   if (options[["setSeed"]])
     set.seed(options[["seed"]])
 
-  chains <- vector("list", nChains)
+  chains        <- vector("list", nChains)
+  residualDraws <- vector("list", nChains)
   for (i in seq_len(nChains)) {
     chain <- try(as.matrix(BayesFactor::posterior(fit, iterations = iter, progress = FALSE)))
     if (isTryError(chain))
       .quitAnalysis(gettextf("The MCMC sampler failed: %s", .rmNewLine(chain)))
+
+    # residuals per draw: observations x draws
+    residualDraws[[i]] <- response - tcrossprod(designMatrix, chain[residualRows, coefCols, drop = FALSE])
 
     gNamesModel <- gNames[gNames %in% colnames(chain)]
     chain       <- chain[-seq_len(burnin), c(gNamesModel, "sig2"), drop = FALSE]
@@ -343,12 +361,21 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
                      dimnames = list(NULL, colnames(chains[[1]]), NULL))
   mcmcArray <- aperm(mcmcArray, c(1, 3, 2)) # iterations x chains x parameters
 
+  # posterior mean and 95% credible interval of the residual of every observation
+  residualDraws <- do.call(cbind, residualDraws)
+  residualCri   <- apply(residualDraws, 1, stats::quantile, probs = c(0.025, 0.975), names = FALSE)
+  residuals     <- data.frame(mean  = rowMeans(residualDraws),
+                              lower = residualCri[1, ],
+                              upper = residualCri[2, ])
+
+  mcmc <- list(samples = mcmcArray, residuals = residuals)
+
   state <- createJaspState()
   state$dependOn(.msabModelDeps)
-  state[["object"]] <- mcmcArray
+  state[["object"]] <- mcmc
   jaspResults[["MCMCsamples"]] <- state
 
-  return(mcmcArray)
+  return(mcmc)
 }
 
 .arrayToMat <- function(array) {
@@ -689,7 +716,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
       return()
 
     varCompPlot <- createJaspPlot(title = gettext("Components of variation"), width = 850, height = 500)
-    varCompPlot$position <- 7
+    varCompPlot$position <- 8
     varCompPlot$dependOn(c(.msabComponentDeps, .msabStudyVarDeps, .msabToleranceDeps, "varianceComponentsGraph", "report"))
     jaspResults[["varCompPlot"]] <- varCompPlot
 
@@ -724,7 +751,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
       return()
 
     container <- createJaspContainer(title = gettext("Traffic light chart"))
-    container$position <- 15
+    container$position <- 16
     container$dependOn(c(.msabComponentDeps, .msabStudyVarDeps, .msabToleranceDeps, "trafficLightChart", "report"))
     jaspResults[["trafficPlot"]] <- container
 
@@ -764,7 +791,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     return()
 
   container <- createJaspContainer(title = gettext("Contour Plot"))
-  container$position <- 16
+  container$position <- 17
   container$dependOn(c(.msabComponentDeps, "contourPlot", "contourLSL", "contourUSL", "report"))
   jaspResults[["contourPlot"]] <- container
 
@@ -817,9 +844,16 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     return()
   }
 
+  excluded <- attr(risks, "excluded")
+  attr(risks, "excluded") <- NULL
+
   risksTable$setData(risks)
   risksTable$addFootnote(gettextf("Risks are computed for the specification limits LSL = %1$s and USL = %2$s. Make sure these match the specification limits of the process.",
                                   LSL, USL))
+  if (excluded > 0)
+    risksTable$addFootnote(gettextf("The risks could not be computed for %s%% of the posterior samples (e.g., because the part-to-part variance was zero); these samples were excluded.",
+                                    signif(100 * excluded, 2)),
+                           symbol = gettext("<b>Warning:</b>"))
 }
 
 # producer's risk (delta): P(measurement out of spec | true value in spec)
@@ -830,12 +864,17 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
   sdP <- sqrt(draws[["part"]][idx])
   sdT <- sqrt(draws[["total"]][idx])
 
+  # truncated draws (historical sd) have zero part variance: the bivariate normal is degenerate
+  valid <- is.finite(sdP) & sdP > 0 & is.finite(sdT) & sdT > 0
+  sdP   <- sdP[valid]
+  sdT   <- sdT[valid]
+
   inSpec <- function(sd) pnorm(USL, mu, sd) - pnorm(LSL, mu, sd)
   pTrue  <- inSpec(sdP) # P(true value in spec)
   pMeas  <- inSpec(sdT) # P(measurement in spec)
 
   # P(true value in spec and measurement in spec)
-  pBoth <- try(vapply(seq_along(idx), function(i) {
+  pBoth <- try(vapply(seq_along(sdP), function(i) {
     covMat <- matrix(c(sdP[i]^2, sdP[i]^2, sdP[i]^2, sdT[i]^2), nrow = 2)
     mvtnorm::pmvnorm(lower = c(LSL, LSL), upper = c(USL, USL), mean = c(mu, mu), sigma = covMat)[1]
   }, numeric(1)))
@@ -846,16 +885,24 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
   delta <- (pTrue - pBoth) / pTrue
   beta  <- (pMeas - pBoth) / (1 - pTrue)
 
-  if (anyNA(delta) || anyNA(beta) || any(!is.finite(c(delta, beta)))) {
-    res <- gettext("Non-finite values introduced during calculation.")
+  # P(true value in spec) numerically 0 or 1 gives 0/0
+  defined <- is.finite(delta) & is.finite(beta)
+  delta   <- delta[defined]
+  beta    <- beta[defined]
+
+  if (length(delta) == 0) {
+    res <- gettext("Non-finite values introduced during calculation for all posterior samples.")
     class(res) <- "try-error"
     return(res)
   }
 
-  data.frame(risks = c("\u03b4", "\u03b2"),
-             means = c(mean(delta), mean(beta)),
-             lower = c(quantile(delta, 0.025, names = FALSE), quantile(beta, 0.025, names = FALSE)),
-             upper = c(quantile(delta, 0.975, names = FALSE), quantile(beta, 0.975, names = FALSE)))
+  res <- data.frame(risks = c("\u03b4", "\u03b2"),
+                    means = c(mean(delta), mean(beta)),
+                    lower = c(quantile(delta, 0.025, names = FALSE), quantile(beta, 0.025, names = FALSE)),
+                    upper = c(quantile(delta, 0.975, names = FALSE), quantile(beta, 0.975, names = FALSE)))
+  # proportion of (thinned) posterior samples for which the risks are undefined
+  attr(res, "excluded") <- 1 - length(delta) / length(idx)
+  return(res)
 }
 
 .msabRChart <- function(jaspResults, data, vars, ready) {
@@ -863,7 +910,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     return()
 
   container <- createJaspContainer(gettext("Range chart by operator"))
-  container$position <- 9
+  container$position <- 10
   container$dependOn(c(.msabDataDeps, "rChart", "report"))
   jaspResults[["rChart"]] <- container
   container[["plot"]] <- createJaspPlot(width = 1200, height = 500)
@@ -881,7 +928,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     return()
 
   container <- createJaspContainer(gettext("Average chart by operator"))
-  container$position <- 10
+  container$position <- 11
   container$dependOn(c(.msabDataDeps, "xBarChart", "report"))
   jaspResults[["xBarChart"]] <- container
   container[["plot"]] <- createJaspPlot(width = 1200, height = 500)
@@ -911,7 +958,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     return()
 
   plot <- createJaspPlot(title = gettext("Matrix plot for operators"), width = 700, height = 700)
-  plot$position <- 11
+  plot$position <- 12
   plot$dependOn(c(.msabDataDeps, "scatterPlot", "scatterPlotFitLine", "scatterPlotOriginLine", "report"))
   jaspResults[["gaugeScatterOperators"]] <- plot
 
@@ -927,7 +974,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     return()
 
   plot <- createJaspPlot(title = gettext("Measurements by part"), width = 700, height = 300)
-  plot$position <- 12
+  plot$position <- 13
   plot$dependOn(c(.msabDataDeps, "partMeasurementPlot", "partMeasurementPlotAllValues", "report"))
   jaspResults[["gaugeByPart"]] <- plot
 
@@ -943,7 +990,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     return()
 
   plot <- createJaspPlot(title = gettext("Measurements by operator"), width = 600, height = 600)
-  plot$position <- 13
+  plot$position <- 14
   plot$dependOn(c(.msabDataDeps, "operatorMeasurementPlot", "report"))
   jaspResults[["gaugeByOperator"]] <- plot
 
@@ -959,7 +1006,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     return()
 
   plot <- createJaspPlot(title = gettext("Part by operator interaction"), width = 700, height = 400)
-  plot$position <- 14
+  plot$position <- 15
   plot$dependOn(c(.msabDataDeps, "partByOperatorMeasurementPlot", "report"))
   jaspResults[["gaugeByInteraction"]] <- plot
 
@@ -976,7 +1023,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     return()
 
   container <- createJaspContainer(title = gettext("Posterior Distributions"))
-  container$position <- 8
+  container$position <- 9
   container$dependOn(c(.msabComponentDeps, .msabStudyVarDeps, .msabToleranceDeps, .msabPosteriorDeps, "posteriorPlot", "report"))
   jaspResults[["posteriorSummaries"]] <- container
 
@@ -1040,7 +1087,8 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     }
 
     stats     <- .msabPosteriorStats(fit, dist, options)
-    rows[[i]] <- data.frame(parameter = labels[i], as.list(stats))
+    # stats is empty when neither the point estimate nor the CrI is requested
+    rows[[i]] <- do.call(data.frame, c(list(parameter = labels[i]), stats))
 
     p <- try(.msabPosteriorPlot(x, fit, dist, stats, labels[i], bounded, options))
     if (isTryError(p)) {
@@ -1209,14 +1257,24 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     shade <- if (is.null(stats[["belowCutOff"]])) {
       c(stats[["ciLower"]], stats[["ciUpper"]])
     } else if (!is.na(stats[["belowCutOff"]])) {
-      c(xLims[1], options[["posteriorCiCutOff"]])
+      # clamped to the axis limits: ggplot drops points outside the scale limits
+      upper <- min(options[["posteriorCiCutOff"]], xLims[2])
+      if (upper > xLims[1]) c(xLims[1], upper) else NA
     } else {
       NA
     }
 
     if (!anyNA(shade)) {
       inside <- densityDf[densityDf[["x"]] > shade[1] & densityDf[["x"]] < shade[2], ]
-      edges  <- data.frame(x = shade, y = dist$densityAt(fit, shade))
+      # the density is not evaluated at the bounds of the support (fragile for the metalog); the nearest grid point is used instead
+      edgeY  <- vapply(shade, function(s) {
+        if (s > 0 && (!bounded || s < 100))
+          return(as.numeric(dist$densityAt(fit, s)))
+        if (nrow(densityDf) == 0)
+          return(0)
+        densityDf[["y"]][if (s <= 0) 1 else nrow(densityDf)]
+      }, numeric(1))
+      edges  <- data.frame(x = shade, y = edgeY)
       areaDf <- rbind(edges[1, ], inside, edges[2, ])
       areaDf <- areaDf[is.finite(areaDf[["y"]]), ]
       p <- p + ggplot2::geom_area(data = areaDf, mapping = ggplot2::aes(x = x, y = y), fill = "grey")
@@ -1389,6 +1447,53 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     ggplot2::scale_y_continuous(name = gettext("Density"), breaks = yBreaks, limits = range(yBreaks)) +
     jaspGraphs::geom_rangeframe() +
     jaspGraphs::themeJaspRaw(legend.position = "right")
+}
+
+#### Residuals ----
+.msabQqPlot <- function(jaspResults, residuals, options, ready) {
+  if (!is.null(jaspResults[["residualQqPlot"]]))
+    return()
+
+  plot <- createJaspPlot(title = gettext("Q-Q plot of residuals"), width = 500, height = 500)
+  plot$position <- 7
+  plot$dependOn(c(.msabModelDeps, "residualQqPlot", "report"))
+  jaspResults[["residualQqPlot"]] <- plot
+
+  if (!ready)
+    return()
+
+  p <- try(.msabQqPlotObject(residuals))
+  if (isTryError(p)) {
+    plot$setError(.rmNewLine(p))
+  } else {
+    plot$plotObject <- p
+  }
+}
+
+# posterior mean residuals against normal quantiles, with 95% credible intervals per residual
+.msabQqPlotObject <- function(residuals) {
+  ord <- order(residuals[["mean"]])
+  df  <- data.frame(theoretical = stats::qnorm(stats::ppoints(nrow(residuals))),
+                    residual    = residuals[["mean"]][ord],
+                    lower       = residuals[["lower"]][ord],
+                    upper       = residuals[["upper"]][ord])
+
+  # reference line through the first and third quartiles
+  quartiles <- stats::quantile(df[["residual"]], c(0.25, 0.75), names = FALSE)
+  slope     <- diff(quartiles) / diff(stats::qnorm(c(0.25, 0.75)))
+  intercept <- quartiles[1] - slope * stats::qnorm(0.25)
+
+  xBreaks <- jaspGraphs::getPrettyAxisBreaks(df[["theoretical"]])
+  yBreaks <- jaspGraphs::getPrettyAxisBreaks(c(df[["lower"]], df[["upper"]], df[["residual"]]))
+
+  ggplot2::ggplot(df, ggplot2::aes(x = theoretical, y = residual)) +
+    ggplot2::geom_abline(intercept = intercept, slope = slope, colour = "darkred", linewidth = 1) +
+    ggplot2::geom_errorbar(ggplot2::aes(ymin = lower, ymax = upper), width = 0.02) +
+    ggplot2::geom_point(colour = "black", fill = "grey", shape = 21, size = 3) +
+    ggplot2::scale_x_continuous(name = gettext("Theoretical quantiles"), breaks = xBreaks, limits = range(xBreaks)) +
+    ggplot2::scale_y_continuous(name = gettext("Observed quantiles"), breaks = yBreaks, limits = range(yBreaks)) +
+    jaspGraphs::geom_rangeframe() +
+    jaspGraphs::themeJaspRaw()
 }
 
 #### Report ----

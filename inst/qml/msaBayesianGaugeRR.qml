@@ -29,6 +29,7 @@ Form
 				+ "- " + qsTr("Standard Deviation & Study Variation: posterior summaries of the standard deviations and study variation. The number of distinct categories (1.41 × σ<sub>Part</sub>/σ<sub>Gauge</sub>) is reported as a posterior mean with credible interval and, unlike the AIAG convention, is not truncated to an integer.") + "\n"
 				+ "- " + qsTr("% Study Variation & % Tolerance: posterior summaries of the percent study variation and percent tolerance.") + "\n"
 				+ "- " + qsTr("MCMC diagnostics: effective sample sizes (ESS) in the bulk and the tails of the distribution, Rhat (values larger than 1.01 indicate potential convergence problems; Vehtari et al., 2021), and Monte Carlo standard errors (MCSE) of the mean and the 2.5% and 97.5% quantiles.") + "\n"
+				+ "- " + qsTr("Q-Q plot of residuals: posterior mean residuals of the estimated model against the quantiles of a normal distribution, with 95% credible intervals per residual, to check the normality assumption of the residuals.") + "\n"
 				+ "- " + qsTr("Posterior Summary: point estimates and credible intervals based on the distribution fit to the MCMC samples.") + "\n"
 				+ "- " + qsTr("Producer's and Consumer's Risk: posterior summaries of the probability that a good part is rejected (δ) and that a bad part is accepted (β).")
 	infoBottom:	"## " + qsTr("References") + "\n"
@@ -507,6 +508,13 @@ Form
 				label:		qsTr("Components of variation")
 				checked:	true
 				info:		qsTr("Bar chart of the components of variation with 95% credible intervals.")
+			}
+
+			CheckBox
+			{
+				name:		"residualQqPlot"
+				label:		qsTr("Q-Q plot of residuals")
+				info:		qsTr("Posterior mean residuals of the estimated model plotted against the quantiles of a normal distribution, with 95% credible intervals for each residual. Used to check the normality assumption of the residuals: the points should lie approximately on the line.")
 			}
 
 			CheckBox
