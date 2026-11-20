@@ -1660,7 +1660,8 @@ test_that("Risks exclude posterior samples with truncated part variance", {
 .msabExpectRisk <- function(row) {
   expect_true(is.numeric(row[["means"]]) && is.numeric(row[["lower"]]) && is.numeric(row[["upper"]]))
   expect_true(all(c(row[["lower"]], row[["means"]], row[["upper"]]) >= 0 & c(row[["lower"]], row[["means"]], row[["upper"]]) <= 1))
-  expect_true(row[["lower"]] <= row[["means"]] && row[["means"]] <= row[["upper"]])
+  # the posterior mean of a very skewed risk can lie outside the 95% credible interval
+  expect_true(row[["lower"]] <= row[["upper"]])
 }
 
 test_that("Risks are computed for specification limits that are wide relative to the part variation", {
