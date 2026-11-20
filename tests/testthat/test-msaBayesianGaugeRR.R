@@ -1644,6 +1644,49 @@ test_that("Risks exclude posterior samples with truncated part variance", {
   expect_true(any(grepl("these samples were excluded", footnotes, fixed = TRUE)))
 })
 
+.msabRisksTable <- function(lsl, usl) {
+  options <- .msabTestOptions()
+  options$contourPlot <- TRUE
+  options$contourLSL <- lsl
+  options$contourUSL <- usl
+  set.seed(1)
+  results <- runAnalysis("msaBayesianGaugeRR", "datasets/msaGaugeRRCrossed/msaGaugeRRCrossed_long.csv", options, view = FALSE)
+  expect_identical(results[["status"]], "complete")
+  table <- results[["results"]][["contourPlot"]][["collection"]][["contourPlot_table"]]
+  expect_null(table[["error"]])
+  expect_length(table[["data"]], 2)
+  table
+}
+.msabExpectRisk <- function(row) {
+  expect_true(is.numeric(row[["means"]]) && is.numeric(row[["lower"]]) && is.numeric(row[["upper"]]))
+  expect_true(all(c(row[["lower"]], row[["means"]], row[["upper"]]) >= 0 & c(row[["lower"]], row[["means"]], row[["upper"]]) <= 1))
+  expect_true(row[["lower"]] <= row[["means"]] && row[["means"]] <= row[["upper"]])
+}
+
+test_that("Risks are computed for specification limits that are wide relative to the part variation", {
+  # P(true value out of spec) is numerically 0: consumer's risk from tail probabilities
+  table <- .msabRisksTable(-100, 100)
+  .msabExpectRisk(table[["data"]][[1]])
+  .msabExpectRisk(table[["data"]][[2]])
+})
+
+test_that("Risks are computed for specification limits far from the process", {
+  # P(true value in spec) is numerically 0: producer's risk from tail probabilities
+  table <- .msabRisksTable(50, 60)
+  .msabExpectRisk(table[["data"]][[1]])
+  .msabExpectRisk(table[["data"]][[2]])
+})
+
+test_that("Undefined consumer's risk is shown as empty row with footnote", {
+  # no true value falls outside the limits, even in logs: consumer's risk undefined, producer's risk still shown
+  table <- .msabRisksTable(-1e160, 1e160)
+  .msabExpectRisk(table[["data"]][[1]])
+  beta <- table[["data"]][[2]][["means"]]
+  expect_false(isTRUE(is.finite(suppressWarnings(as.numeric(beta)))))
+  footnotes <- vapply(table[["footnotes"]], `[[`, character(1), "text")
+  expect_true(any(grepl("is undefined", footnotes, fixed = TRUE)))
+})
+
 test_that("Report without gauge evaluation table is created", {
   options <- .msabTestOptions()
   options$report <- TRUE

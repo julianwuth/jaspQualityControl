@@ -269,6 +269,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
   parts       <- vars[["parts"]]
   operators   <- vars[["operators"]]
 
+  startProgressbar(length(missing), gettext("Computing Bayes factors"))
   for (m in missing) {
     if (options[["type3"]]) {
       formula     <- as.formula(paste(measurement, "~", parts))
@@ -285,6 +286,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
 
     fits[[m]] <- try(BayesFactor::lmBF(formula, data = dataLong, whichRandom = whichRandom,
                                        rscaleRandom = options[["rscalePrior"]], progress = FALSE))
+    progressbarTick()
   }
 
   state[["object"]] <- fits
@@ -340,6 +342,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
 
   chains        <- vector("list", nChains)
   residualDraws <- vector("list", nChains)
+  startProgressbar(nChains, gettext("Sampling from the posterior"))
   for (i in seq_len(nChains)) {
     chain <- try(as.matrix(BayesFactor::posterior(fit, iterations = iter, progress = FALSE)))
     if (isTryError(chain))
@@ -355,6 +358,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
     chain[, gNamesModel] <- chain[, gNamesModel] * chain[, "sig2"]
     colnames(chain)      <- c(names(gNamesModel), "error")
     chains[[i]]          <- chain
+    progressbarTick()
   }
 
   mcmcArray <- array(unlist(chains), dim = c(iter - burnin, ncol(chains[[1]]), nChains),
@@ -838,7 +842,7 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
       jaspGraphs::geom_rangeframe(sides = "bl")
   }
 
-  risks <- .msabRisks(draws, mu, LSL, USL)
+  risks <- .msabRisks(draws, mu, LSL, USL, progress = TRUE)
   if (isTryError(risks)) {
     risksTable$setError(gettextf("Risks could not be computed: %s<br>Try adjusting the specification limits.", .rmNewLine(risks)))
     return()
@@ -850,59 +854,171 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
   risksTable$setData(risks)
   risksTable$addFootnote(gettextf("Risks are computed for the specification limits LSL = %1$s and USL = %2$s. Make sure these match the specification limits of the process.",
                                   LSL, USL))
-  if (excluded > 0)
-    risksTable$addFootnote(gettextf("The risks could not be computed for %s%% of the posterior samples (e.g., because the part-to-part variance was zero); these samples were excluded.",
-                                    signif(100 * excluded, 2)),
-                           symbol = gettext("<b>Warning:</b>"))
+  .msabRisksFootnotes(risksTable, excluded)
+}
+
+# warnings for posterior samples (proportion per risk) for which a risk is undefined
+.msabRisksFootnotes <- function(table, excluded) {
+  warnSymbol <- gettext("<b>Warning:</b>")
+
+  if (excluded[["delta"]] == 1)
+    table$addFootnote(gettext("The producer's risk (\u03b4) is undefined: virtually none of the true values fall within the specification limits."),
+                      symbol = warnSymbol)
+  if (excluded[["beta"]] == 1)
+    table$addFootnote(gettext("The consumer's risk (\u03b2) is undefined: virtually none of the true values fall outside the specification limits."),
+                      symbol = warnSymbol)
+
+  partial <- excluded[excluded > 0 & excluded < 1]
+  if (length(partial) == 2 && partial[["delta"]] == partial[["beta"]]) {
+    table$addFootnote(gettextf("The risks could not be computed for %s%% of the posterior samples (e.g., because the part-to-part variance was zero); these samples were excluded.",
+                               signif(100 * partial[["delta"]], 2)),
+                      symbol = warnSymbol)
+    return()
+  }
+
+  riskNames <- c(delta = gettext("producer's risk (\u03b4)"), beta = gettext("consumer's risk (\u03b2)"))
+  for (risk in names(partial))
+    table$addFootnote(gettextf("The %1$s could not be computed for %2$s%% of the posterior samples (e.g., because the part-to-part variance was zero); these samples were excluded.",
+                               riskNames[[risk]], signif(100 * partial[[risk]], 2)),
+                      symbol = warnSymbol)
 }
 
 # producer's risk (delta): P(measurement out of spec | true value in spec)
 # consumer's risk (beta):  P(measurement in spec | true value out of spec)
-.msabRisks <- function(draws, mu, LSL, USL, maxDraws = 8000) {
+# true value ~ N(mu, part), measurement | true value ~ N(true value, total - part)
+.msabRisks <- function(draws, mu, LSL, USL, maxDraws = 8000, progress = FALSE) {
   # thin the draws: the Monte Carlo error on the mean and the 95% CrI is negligible
   idx <- unique(round(seq(1, nrow(draws), length.out = min(maxDraws, nrow(draws)))))
   sdP <- sqrt(draws[["part"]][idx])
   sdT <- sqrt(draws[["total"]][idx])
+  sdE <- sqrt(draws[["total"]][idx] - draws[["part"]][idx])
 
   # truncated draws (historical sd) have zero part variance: the bivariate normal is degenerate
-  valid <- is.finite(sdP) & sdP > 0 & is.finite(sdT) & sdT > 0
+  valid <- is.finite(sdP) & sdP > 0 & is.finite(sdT) & sdT > 0 & is.finite(sdE) & sdE > 0
   sdP   <- sdP[valid]
   sdT   <- sdT[valid]
+  sdE   <- sdE[valid]
 
   inSpec <- function(sd) pnorm(USL, mu, sd) - pnorm(LSL, mu, sd)
   pTrue  <- inSpec(sdP) # P(true value in spec)
   pMeas  <- inSpec(sdT) # P(measurement in spec)
 
-  # P(true value in spec and measurement in spec)
-  pBoth <- try(vapply(seq_along(sdP), function(i) {
-    covMat <- matrix(c(sdP[i]^2, sdP[i]^2, sdP[i]^2, sdT[i]^2), nrow = 2)
-    mvtnorm::pmvnorm(lower = c(LSL, LSL), upper = c(USL, USL), mean = c(mu, mu), sigma = covMat)[1]
-  }, numeric(1)))
+  # pnorm and pmvnorm have an absolute error of ~1e-16, so the differences of probabilities in the formulas below have a relative
+  # error of ~1e-16 / difference. Below minProb (relative error > ~1e-10) the risk is computed from tail probabilities instead.
+  # The numerators are joint probabilities, so this also covers denominators below minProb (e.g. 1 - pTrue = 0 for wide limits).
+  minProb <- 1e-6
 
-  if (isTryError(pBoth))
-    return(pBoth)
-
-  delta <- (pTrue - pBoth) / pTrue
-  beta  <- (pMeas - pBoth) / (1 - pTrue)
-
-  # P(true value in spec) numerically 0 or 1 gives 0/0
-  defined <- is.finite(delta) & is.finite(beta)
-  delta   <- delta[defined]
-  beta    <- beta[defined]
-
-  if (length(delta) == 0) {
-    res <- gettext("Non-finite values introduced during calculation for all posterior samples.")
-    class(res) <- "try-error"
-    return(res)
+  risksDraw <- function(i) {
+    covMat   <- matrix(c(sdP[i]^2, sdP[i]^2, sdP[i]^2, sdT[i]^2), nrow = 2)
+    pBoth    <- mvtnorm::pmvnorm(lower = c(LSL, LSL), upper = c(USL, USL), mean = c(mu, mu), sigma = covMat)[1]
+    numDelta <- pTrue[i] - pBoth # P(true value in spec and measurement out of spec)
+    numBeta  <- pMeas[i] - pBoth # P(true value out of spec and measurement in spec)
+    delta    <- numDelta / pTrue[i]
+    beta     <- numBeta / (1 - pTrue[i])
+    if (!is.finite(delta) || numDelta < minProb)
+      delta <- .msabStableDelta(mu, sdP[i], sdE[i], LSL, USL)
+    if (!is.finite(beta) || numBeta < minProb)
+      beta <- .msabStableBeta(mu, sdP[i], sdE[i], LSL, USL)
+    c(delta, beta)
   }
 
+  # coarse progress: a few ticks instead of one per draw
+  chunks <- if (length(sdP) > 0) split(seq_along(sdP), cut(seq_along(sdP), min(25, length(sdP)), labels = FALSE)) else list()
+  if (progress && length(chunks) > 0)
+    startProgressbar(length(chunks), gettext("Computing producer's and consumer's risk"))
+
+  risks <- try({
+    out <- matrix(NA_real_, nrow = 2, ncol = length(sdP))
+    for (chunk in chunks) {
+      out[, chunk] <- vapply(chunk, risksDraw, numeric(2))
+      if (progress)
+        progressbarTick()
+    }
+    out
+  })
+
+  if (isTryError(risks))
+    return(risks)
+
+  # each risk is summarised over the draws for which it is defined
+  summariseRisk <- function(x) {
+    x <- x[is.finite(x)]
+    if (length(x) == 0)
+      return(c(mean = NA_real_, lower = NA_real_, upper = NA_real_))
+    c(mean = mean(x), lower = quantile(x, 0.025, names = FALSE), upper = quantile(x, 0.975, names = FALSE))
+  }
+  delta <- summariseRisk(risks[1, ])
+  beta  <- summariseRisk(risks[2, ])
+
   res <- data.frame(risks = c("\u03b4", "\u03b2"),
-                    means = c(mean(delta), mean(beta)),
-                    lower = c(quantile(delta, 0.025, names = FALSE), quantile(beta, 0.025, names = FALSE)),
-                    upper = c(quantile(delta, 0.975, names = FALSE), quantile(beta, 0.975, names = FALSE)))
-  # proportion of (thinned) posterior samples for which the risks are undefined
-  attr(res, "excluded") <- 1 - length(delta) / length(idx)
+                    means = c(delta[["mean"]],  beta[["mean"]]),
+                    lower = c(delta[["lower"]], beta[["lower"]]),
+                    upper = c(delta[["upper"]], beta[["upper"]]))
+  # proportion of (thinned) posterior samples for which each risk is undefined
+  attr(res, "excluded") <- c(delta = 1 - sum(is.finite(risks[1, ])) / length(idx),
+                             beta  = 1 - sum(is.finite(risks[2, ])) / length(idx))
   return(res)
+}
+
+# E[g(T) | lower < T < upper] for T ~ N(mu, sd), by integrating g against the conditional density. The interval probability is
+# handled in logs as a difference of tail probabilities on the side of mu where the interval lies, so a tiny interval
+# probability neither cancels nor underflows. The integration variable is the offset x = T - ref from mu (if mu lies in the
+# interval) or else from the bound nearest to mu, and g(x, ref) takes this offset, so that far out limits (e.g. +-1e4) lose
+# no precision. gSpan: distance from the bound nearest to mu beyond which g is negligible.
+.msabCondMean <- function(g, mu, sd, lower, upper, gSpan = Inf) {
+  lowerTail <- (lower + upper) / 2 < mu
+  near      <- if (lowerTail) upper else lower # bound with the larger tail probability
+  far       <- if (lowerTail) lower else upper
+  logNear   <- pnorm(near, mu, sd, lower.tail = lowerTail, log.p = TRUE)
+  logProb   <- logNear + log1p(-exp(pnorm(far, mu, sd, lower.tail = lowerTail, log.p = TRUE) - logNear))
+  if (!is.finite(logProb))
+    return(NA_real_)
+
+  # where the density is not negligible: within 50 sd of mu, or, if mu lies outside the interval, within 50 times the
+  # decay scale (sd^2 / distance to mu, at most sd) of the nearest bound
+  inside <- lower < mu && mu < upper
+  ref    <- if (inside) mu else near
+  dist   <- abs(near - mu)
+  scale  <- if (inside) sd else min(sd, sd^2 / dist)
+  from   <- max(lower, near - gSpan, ref - 50 * scale) - ref
+  to     <- min(upper, near + gSpan, ref + 50 * scale) - ref
+
+  # log conditional density at offset x: log density at ref - log interval probability + exact quadratic in x
+  logDensRef <- dnorm(ref, mu, sd, log = TRUE) - logProb
+  integrand  <- function(x) g(x, ref) * exp(logDensRef - x * (x + 2 * (ref - mu)) / (2 * sd^2))
+
+  # split at mu, so a narrow peak of the integrand at a bound is at the end of a subinterval, where integrate() refines
+  breaks <- if (from < 0 && 0 < to) c(from, 0, to) else c(from, to)
+  tryCatch(sum(vapply(seq_len(length(breaks) - 1), function(j) {
+    stats::integrate(integrand, breaks[j], breaks[j + 1], rel.tol = 1e-10, abs.tol = 0, subdivisions = 1000L)[["value"]]
+  }, numeric(1))), error = function(e) NA_real_)
+}
+
+# producer's risk from the conditional distribution of the true value in spec
+.msabStableDelta <- function(mu, sdP, sdE, LSL, USL) {
+  # P(measurement out of spec | true value ref + x)
+  gOut <- function(x, ref) pnorm(((LSL - ref) - x) / sdE) + pnorm(((USL - ref) - x) / sdE, lower.tail = FALSE)
+  .msabCondMean(gOut, mu, sdP, LSL, USL)
+}
+
+# consumer's risk as the mixture over the two tails of the true value out of spec
+.msabStableBeta <- function(mu, sdP, sdE, LSL, USL) {
+  logLower <- pnorm(LSL, mu, sdP, log.p = TRUE)
+  logUpper <- pnorm(USL, mu, sdP, lower.tail = FALSE, log.p = TRUE)
+  # P(true < LSL | true out of spec) and P(true > USL | true out of spec), each without cancellation; NaN if both tails underflow
+  wLower   <- stats::plogis(logLower - logUpper)
+  wUpper   <- stats::plogis(logUpper - logLower)
+  if (!is.finite(wLower))
+    return(NA_real_)
+
+  # P(measurement in spec | true value ref + x) below LSL and above USL, as differences of small tail probabilities;
+  # negligible more than 40 measurement error sds away from the specification limit
+  gInBelow <- function(x, ref) pnorm(((LSL - ref) - x) / sdE, lower.tail = FALSE) - pnorm(((USL - ref) - x) / sdE, lower.tail = FALSE)
+  gInAbove <- function(x, ref) pnorm(((USL - ref) - x) / sdE) - pnorm(((LSL - ref) - x) / sdE)
+
+  lower <- if (wLower > 0) .msabCondMean(gInBelow, mu, sdP, -Inf, LSL, gSpan = 40 * sdE) else 0
+  upper <- if (wUpper > 0) .msabCondMean(gInAbove, mu, sdP, USL,  Inf, gSpan = 40 * sdE) else 0
+  wLower * lower + wUpper * upper
 }
 
 .msabRChart <- function(jaspResults, data, vars, ready) {
@@ -1070,10 +1186,13 @@ msaBayesianGaugeRR <- function(jaspResults, dataset, options) {
   rows      <- vector("list", length(ids))
   anyFailed <- FALSE
 
+  if (length(ids) > 0)
+    startProgressbar(length(ids), gettext("Fitting posterior distributions"))
   for (i in seq_along(ids)) {
     x   <- posteriorSamples[, ids[i]]
     # both distributions have positive support; truncated draws (historical sd) form a point mass at the bound
     fit <- try(dist$fit(x[x > 0 & (!bounded | x < 100)], bounded))
+    progressbarTick()
 
     plot <- createJaspPlot(title = labels[i], width = 600, height = 320)
     plot$position <- i + 1
